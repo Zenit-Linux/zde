@@ -1,4 +1,29 @@
-import std/os
+import std/[os, strutils]
+
+proc detectPkgConfigName(candidates: openArray[string]): string =
+  ## Różne dystrybucje nazywają plik .pc dla wlroots inaczej: Ubuntu (od
+  ## 24.10) trzyma kilka wersji równolegle jako `wlroots-0.20.pc` itd.,
+  ## a Debian (na niektórych wersjach) też potrafi używać wersjonowanej
+  ## nazwy zamiast prostego `wlroots.pc`. Zamiast wymagać ręcznego
+  ## `ln -s wlroots-0.20.pc wlroots.pc`, próbujemy po kolei znanych nazw
+  ## i używamy pierwszej, którą faktycznie widzi `pkg-config --exists`.
+  for c in candidates:
+    let (_, code) = gorgeEx("pkg-config --exists " & c)
+    if code == 0:
+      return c
+  return ""
+
+const wlrootsCandidates = [
+  "wlroots", "wlroots-0.20", "wlroots-0.19", "wlroots-0.18", "wlroots-0.17"
+]
+const wlrootsPkgName = detectPkgConfigName(wlrootsCandidates)
+
+when wlrootsPkgName.len == 0:
+  {.error: "pkg-config nie widzi żadnej z nazw: " & wlrootsCandidates.join(", ") &
+           ". Zainstaluj pakiet -dev dla wlroots (>= 0.18) -- np. `sudo apt " &
+           "install libwlroots-dev` albo, jeśli Twoja dystrybucja wersjonuje " &
+           "równolegle, `libwlroots-0.20-dev`. Sprawdź ręcznie: " &
+           "`pkg-config --list-all | grep -i wlroots`.".}
 
 proc pkgConfigOrDie(pkgName, mode: string): string =
   ## Zwykłe `gorge()` po cichu zwraca połączone stdout+stderr bez sprawdzania
@@ -23,8 +48,8 @@ proc pkgConfigOrDie(pkgName, mode: string): string =
 
 {.passC: "-DWLR_USE_UNSTABLE".}
 {.passC: "-I" & currentSourcePath().parentDir() / "protocol".}
-{.passC: pkgConfigOrDie("wlroots", "--cflags").}
-{.passL: pkgConfigOrDie("wlroots", "--libs").}
+{.passC: pkgConfigOrDie(wlrootsPkgName, "--cflags").}
+{.passL: pkgConfigOrDie(wlrootsPkgName, "--libs").}
 {.passC: pkgConfigOrDie("wayland-server", "--cflags").}
 {.passL: pkgConfigOrDie("wayland-server", "--libs").}
 {.passC: pkgConfigOrDie("xkbcommon", "--cflags").}
