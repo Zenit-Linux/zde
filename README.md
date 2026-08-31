@@ -10,32 +10,115 @@ Stack:
   pierwszy, z TTY.
 - **`zde-shell`** -- pasek zadań / launcher / chrome okien (Fidget). To
   *klient* Wayland, łączy się z socketem, który wystawia `zde-comp`.
-- `apps/terminal`, `apps/file-manager` -- wbudowane aplikacje shellu.
-- `comp/comp.nim` -- logika okien używana przez `zde-shell` (nie mylić z
-  `wlcomp/` -- to osobna, dużo niższopoziomowa warstwa: prawdziwy kompozytor).
+- `apps/terminal`, `apps/filemanager`, `apps/clock`, `apps/texteditor`,
+  `apps/calculator`, `apps/sysmonitor` -- wbudowane aplikacje shellu.
+- `comp/` -- logika okien używana przez `zde-shell`, rozbita na kilka plików
+  (nie mylić z `wlcomp/` -- to osobna, dużo niższopoziomowa warstwa: prawdziwy kompozytor).
+
+### Struktura plików
+
+```
+wlcomp/            -- zde-comp (kompozytor)
+  types.nim           wspólne typy: Server/Output/Toplevel/Keyboard
+  output.nim          wyjścia (monitory): init, klatki, odłączanie
+  toplevel.nim        okna xdg-shell: focus, move/resize, hit-testing
+  input.nim           klawiatura + kursor/mysz
+  main.nim            tylko inicjalizacja i spięcie sygnałów
+  wlroots.nim         bindingi FFI do libwlroots/wayland-server
+  shim.c/.h           C glue dla funkcji `static inline` z wayland-server
+
+shell/              -- zde-shell (pasek/launcher/chrome okien)
+  state.nim           stan globalny (compositor, zegar) + stałe kolorów
+  waylandlink.nim      linkowanie protokołów Wayland przy -d:wayland (patrz niżej)
+  wallpaper.nim        tło pulpitu
+  chrome.nim           pasek tytułu / obramowanie / przyciski okna
+  taskbar.nim          pasek zadań + launcher
+  launcher_apps.nim    uruchamianie poszczególnych aplikacji z launchera
+  shell.nim            główna pętla rysowania + start
+
+comp/                -- silnik okien używany przez zde-shell (focus/z-order/drag)
+  types.nim            wspólne typy: ZdeWindow, Compositor, DragState
+  window.nim           cykl życia okien: tworzenie/zamykanie, focus, z-order
+  drag.nim             przeciąganie/zmiana rozmiaru myszą
+  comp.nim             fasada re-eksportująca powyższe (import bez zmian)
+apps/                -- aplikacje uruchamiane z launchera
+  terminal/            terminal (bash przez potoki, bez pty)
+  filemanager/         przeglądarka plików
+  clock/               zegar analogowy + cyfrowy + data
+  texteditor/          prosty edytor plików tekstowych
+  calculator/          kalkulator (siatka przycisków, prosty automat stanu)
+  sysmonitor/          monitor systemu -- realne CPU/RAM z /proc, wykres historii
+```
+
+`shell/wlprotocol/` (nagłówki+źródła protokołów Wayland dla `waylandlink.nim`,
+wygenerowane przez `wayland-scanner`) i `wlcomp/protocol/` to wygenerowane
+artefakty budowania -- nie są wersjonowane w repo, `build.janet` tworzy je
+przy każdym uruchomieniu.
 
 ## Budowanie
+
+**`build.janet` samo wykrywa i instaluje brakujące zależności systemowe** --
+nie musisz już ręcznie szukać nazwy pakietu (`apt-cache search libwlroots`
+itp.) ani odgadywać, czy Twoja dystrybucja nazywa go `libwlroots-dev` czy
+`libwlroots-0.20-dev`. Obsługiwane menedżery pakietów: **apt**
+(Debian/Ubuntu), **dnf** (Fedora/RHEL), **pacman** (Arch), **zypper**
+(openSUSE), **apk** (Alpine). Przy pierwszym uruchomieniu `janet
+build.janet` samo:
+
+1. wykryje Twoją dystrybucję i menedżer pakietów,
+2. sprawdzi każdą zależność (`nim`, `gcc`, `wayland-scanner`,
+   `wlroots >= 0.18`, `wayland-server`, `xkbcommon`, ...),
+3. dla brakujących -- **dla wlroots dodatkowo przeszuka dostępne pakiety**
+   (odpowiednik ręcznego `apt-cache search` + wybrania najnowszej
+   wersjonowanej nazwy) -- i **zapyta o zgodę** przed jakąkolwiek instalacją
+   wymagającą uprawnień administratora (użyje `sudo`, jeśli nie jesteś
+   rootem),
+4. zainstaluje i sprawdzi jeszcze raz, zanim przejdzie dalej.
+
+**Osobno, przed budowaniem `zde-shell`, `build.janet` sprawdza też paczki
+nimble** (Fidget i całe jego drzewo zależności: pixie, typography,
+staticglfw, opengl, ...) -- jeśli którejś brakuje, samo odpala `nimble
+install -y` (to czyta `zde.nimble` z bieżącego katalogu, więc uwzględni
+przypięte tam wersje). Nie musisz już ręcznie pamiętać o `nimble install`
+przed pierwszym budowaniem.
+
+Do automatyzacji (np. CI, obrazy Dockera) ustaw `ZDE_ASSUME_YES=1` w
+środowisku, żeby pominąć pytania:
+
+```bash
+ZDE_ASSUME_YES=1 janet build.janet
+```
 
 **Wymagana wersja wlroots: >= 0.18.** `zde-comp` używa API opartego o
 `wlr_output_state` (`wlr_output_state_init`/`set_mode`/`set_enabled` +
 `wlr_output_commit_state`), które zastąpiło starsze
 `wlr_output_set_mode`/`wlr_output_enable`/`wlr_output_commit` w wlroots
 0.18. Ubuntu 24.04 (noble) ma tylko wlroots 0.17 w apt -- na niej `zde-comp`
-**się nie zbuduje**. Sprawdź swoją wersję: `pkg-config --modversion
-wlroots` (albo `wlroots-0.XX`, zależnie od dystrybucji). Ubuntu 24.10+
+**się nie zbuduje** (auto-instalacja i tak zainstaluje to, co dostępne w
+Twoich repozytoriach -- jeśli to za stara wersja, kompilacja zde-comp
+zgłosi to jasnym błędem C, nie czymś tajemniczym). Sprawdź swoją wersję:
+`pkg-config --modversion wlroots` (albo `wlroots-0.XX`). Ubuntu 24.10+
 (oracular/plucky/questing) i Debian testing/sid mają wystarczająco nowe
 wersje.
 
-Wymagania systemowe (Ubuntu/Debian; nazwy pakietów w innych dystrybucjach
-mogą się różnić):
+Jeśli wolisz zainstalować wszystko ręcznie z wyprzedzeniem zamiast polegać
+na auto-instalacji (Ubuntu/Debian; nazwy pakietów w innych dystrybucjach
+się różnią):
 
 ```bash
 sudo apt install nim nimble gcc \
   libwlroots-dev wayland-protocols libwayland-bin \
   libxkbcommon-dev libinput-dev libgbm-dev libdrm-dev libseat-dev \
   libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxxf86vm-dev \
-  libglfw3-dev libgl1-mesa-dev
+  libglfw3-dev libgl1-mesa-dev fontconfig fonts-dejavu-core
 ```
+
+**`zde-shell` wymaga zainstalowanego fontu** (dowolnego, byle był) --
+używa `fontconfig` (`fc-match`) do znalezienia najlepszego dostępnego fontu
+`sans-serif`/`monospace` w systemie, więc nie dołączamy własnych plików
+`.ttf`. Jeśli zobaczysz błąd `nie znaleziono żadnego fontu` przy starcie,
+zainstaluj `fontconfig` + dowolny font (np. `fonts-dejavu-core`) -- na
+desktopowym Linuksie to i tak niemal zawsze już jest.
 
 `build.janet` wymaga interpretera **Janet** (`sh: 1: janet: not found`, jeśli
 go brakuje). Ubuntu/Debian nie mają go w apt -- zbuduj ze źródeł (mały
@@ -187,3 +270,10 @@ zawężony zakres, nie przeoczenie:
 - terminal (`apps/terminal`) nie ma prawdziwego PTY -- działa przez zwykłe
   potoki do `bash`, więc programy pełnoekranowe (`vim`, `top`, `less`) nie
   będą działać poprawnie
+- edytor tekstu (`apps/texteditor`) nie ma podświetlania składni, wielu
+  zakładek ani wykrywania zmian pliku na dysku w tle
+- zegar (`apps/clock`) nie ma alarmów/timerów -- to czysto wizualny widget
+- brak menedżera okien wielomonitorowego UI (dodawanie/przestawianie
+  wyjść działa "pod spodem" w `zde-comp`, ale nie ma do tego panelu
+  ustawień)
+- brak dedykowanej aplikacji "Ustawienia" (motyw, tapeta, skróty klawiszowe)
