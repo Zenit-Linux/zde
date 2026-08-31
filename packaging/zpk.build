@@ -1,0 +1,18 @@
+package {
+  name        = "zde"
+  version     = "0.1.0"
+  arch        = ["x86_64"]
+  description = "Zenit Desktop Environment (ZDE) -- srodowisko graficzne Zenit Linux (kompozytor Wayland zde-comp + shell zde-shell), w Nimie + Fidget"
+  depends_on  = ["wlroots", "wayland", "xkbcommon"]
+}
+
+recipe {
+  file = "recipe.janet"
+  lang = "janet"
+}
+
+release {
+  repo       = "https://github.com/Zenit-Linux/own-repository"
+  repo_file  = "repo/own-repository.json"
+  asset_name = "zde"
+}
