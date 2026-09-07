@@ -84,6 +84,19 @@ type
 proc wlDisplayCreate*(): ptr WlDisplay {.importc: "wl_display_create", header: "<wayland-server-core.h>".}
 proc wlDisplayDestroy*(d: ptr WlDisplay) {.importc: "wl_display_destroy", header: "<wayland-server-core.h>".}
 proc wlDisplayGetEventLoop*(d: ptr WlDisplay): ptr WlEventLoop {.importc: "wl_display_get_event_loop", header: "<wayland-server-core.h>".}
+type
+  WlEventSource* {.importc: "struct wl_event_source", header: "<wayland-server-core.h>", incompleteStruct.} = object
+## NAPRAWIONY BRAK: konfiguracja (monitory, układ klawiatury) była czytana
+## wyłącznie raz przy starcie -- zmiana w Ustawieniach wymagała ręcznego
+## restartu zde-comp. `SIGHUP` to standardowa uniksowa konwencja "przeładuj
+## konfigurację" (nginx, sshd itd.) -- `wl_event_loop_add_signal` integruje
+## obsługę sygnału POSIX czysto z pętlą zdarzeń Wayland (bez ryzyk
+## klasycznego handlera sygnału: brak async-signal-safe ograniczeń, bo
+## faktyczne wywołanie callbacku i tak dzieje się w głównej pętli, nie w
+## przerwaniu).
+proc wlEventLoopAddSignal*(loop: ptr WlEventLoop, signalNumber: cint,
+                            fn: proc(signalNumber: cint, data: pointer): cint {.cdecl.},
+                            data: pointer): ptr WlEventSource {.importc: "wl_event_loop_add_signal", header: "<wayland-server-core.h>".}
 proc wlDisplayAddSocketAuto*(d: ptr WlDisplay): cstring {.importc: "wl_display_add_socket_auto", header: "<wayland-server-core.h>".}
 proc wlDisplayRun*(d: ptr WlDisplay) {.importc: "wl_display_run", header: "<wayland-server-core.h>".}
 proc wlDisplayDestroyClients*(d: ptr WlDisplay) {.importc: "wl_display_destroy_clients", header: "<wayland-server-core.h>".}
@@ -124,7 +137,7 @@ type
   WlrRenderer* {.importc: "struct wlr_renderer", header: "wlr/render/wlr_renderer.h", incompleteStruct.} = object
   WlrAllocator* {.importc: "struct wlr_allocator", header: "wlr/render/allocator.h", incompleteStruct.} = object
 
-proc wlrBackendAutocreate*(loop: ptr WlEventLoop, sessionPtr: pointer = nil): ptr WlrBackend {.importc: "wlr_backend_autocreate", header: "wlr/backend.h".}
+proc wlrBackendAutocreate*(display: ptr WlDisplay): ptr WlrBackend {.importc: "zde_backend_autocreate", header: "shim.h".}
 proc wlrBackendStart*(b: ptr WlrBackend): bool {.importc: "wlr_backend_start", header: "wlr/backend.h".}
 proc wlrBackendDestroy*(b: ptr WlrBackend) {.importc: "wlr_backend_destroy", header: "wlr/backend.h".}
 proc backendEvents*(b: ptr WlrBackend): ptr WlrBackendEvents {.inline.} = cast[ptr WlrBackendEvents](b)
@@ -194,10 +207,11 @@ proc wlrOutputStateSetMode*(state: ptr WlrOutputState, mode: ptr WlrOutputMode) 
 proc wlrOutputCommitState*(o: ptr WlrOutput, state: ptr WlrOutputState): bool {.importc: "wlr_output_commit_state", header: "wlr/types/wlr_output.h".}
 ## `wlr_output_create_global` od 0.18 wymaga jawnie podanego `wl_display`
 ## (wcześniej brał go z kontekstu outputu automatycznie).
-proc wlrOutputCreateGlobal*(o: ptr WlrOutput, display: ptr WlDisplay) {.importc: "wlr_output_create_global", header: "wlr/types/wlr_output.h".}
+proc wlrOutputCreateGlobal*(o: ptr WlrOutput, display: ptr WlDisplay) {.importc: "zde_output_create_global", header: "shim.h".}
 
-proc wlrOutputLayoutCreate*(display: ptr WlDisplay): ptr WlrOutputLayout {.importc: "wlr_output_layout_create", header: "wlr/types/wlr_output_layout.h".}
+proc wlrOutputLayoutCreate*(display: ptr WlDisplay): ptr WlrOutputLayout {.importc: "zde_output_layout_create", header: "shim.h".}
 proc wlrOutputLayoutAddAuto*(layout: ptr WlrOutputLayout, o: ptr WlrOutput) {.importc: "wlr_output_layout_add_auto", header: "wlr/types/wlr_output_layout.h".}
+proc wlrOutputLayoutAdd*(layout: ptr WlrOutputLayout, o: ptr WlrOutput, lx, ly: cint) {.importc: "wlr_output_layout_add", header: "wlr/types/wlr_output_layout.h".}
 
 proc wlrSceneCreate*(): ptr WlrScene {.importc: "wlr_scene_create", header: "wlr/types/wlr_scene.h".}
 proc wlrSceneAttachOutputLayout*(scene: ptr WlrScene, layout: ptr WlrOutputLayout): ptr WlrSceneOutputLayout {.importc: "wlr_scene_attach_output_layout", header: "wlr/types/wlr_scene.h".}
@@ -210,6 +224,8 @@ proc wlrSceneNodeDestroy*(n: ptr WlrSceneNode) {.importc: "wlr_scene_node_destro
 proc wlrSceneNodeAt*(n: ptr WlrSceneNode, lx, ly: cdouble, sx, sy: ptr cdouble): ptr WlrSceneNode {.importc: "wlr_scene_node_at", header: "wlr/types/wlr_scene.h".}
 proc wlrSceneXdgSurfaceCreate*(parent: ptr WlrSceneTree, xdgSurface: pointer): ptr WlrSceneTree {.importc: "wlr_scene_xdg_surface_create", header: "wlr/types/wlr_scene.h".}
 proc wlrSceneTreeFromNode*(n: ptr WlrSceneNode): ptr WlrSceneTree {.importc: "wlr_scene_tree_from_node", header: "wlr/types/wlr_scene.h".}
+proc wlrSceneTreeCreate*(parent: ptr WlrSceneTree): ptr WlrSceneTree {.importc: "wlr_scene_tree_create", header: "wlr/types/wlr_scene.h".}
+proc wlrSceneNodeSetEnabled*(n: ptr WlrSceneNode, enabled: bool) {.importc: "wlr_scene_node_set_enabled", header: "wlr/types/wlr_scene.h".}
 
 ## `wlr_scene.tree` i `wlr_scene_tree.node` są zawsze pierwszym polem swojego
 ## struct-a (patrz nagłówek) -- więc rzutowanie wskaźnika na offset 0 daje
@@ -232,9 +248,6 @@ type
     surface* {.importc: "surface".}: ptr WlrSurface
     role* {.importc: "role".}: WlrXdgSurfaceRole
     toplevel* {.importc: "toplevel".}: ptr WlrXdgToplevel
-    ## Od wlroots 0.18 to publiczne pole (dawniej trzeba było wołać
-    ## `wlr_xdg_surface_get_geometry()`, którego już nie ma w nagłówkach).
-    geometry* {.importc: "geometry".}: WlrBox
 
   WlrXdgSurfaceEvents* {.importc: "struct wlr_xdg_surface", header: "wlr/types/wlr_xdg_shell.h", incompleteStruct.} = object
     destroy* {.importc: "events.destroy".}: WlSignal
@@ -259,11 +272,116 @@ proc xdgShellEvents*(s: ptr WlrXdgShell): ptr WlrXdgShellEvents {.inline.} = cas
 proc xdgSurfaceEvents*(s: ptr WlrXdgSurface): ptr WlrXdgSurfaceEvents {.inline.} = cast[ptr WlrXdgSurfaceEvents](s)
 proc xdgToplevelEvents*(t: ptr WlrXdgToplevel): ptr WlrXdgToplevelEvents {.inline.} = cast[ptr WlrXdgToplevelEvents](t)
 
-## `wlr_xdg_surface_get_geometry()` zniknęło z nagłówków w wlroots 0.18+ --
-## `geometry` jest teraz zwykłym publicznym polem WlrXdgSurface (patrz wyżej).
+## Geometria xdg-surface: pole `.geometry` w 0.18 kontra funkcja
+## `wlr_xdg_surface_get_geometry()` w 0.17 -- ujednolicone przez shim,
+## patrz komentarz w shim.c i shim.h.
+proc zdeXdgSurfaceGetGeometry(s: ptr WlrXdgSurface, o: ptr WlrBox) {.importc: "zde_xdg_surface_get_geometry", header: "shim.h".}
+proc geometry*(s: ptr WlrXdgSurface): WlrBox {.inline.} =
+  zdeXdgSurfaceGetGeometry(s, addr result)
+
 proc wlrXdgToplevelSetActivated*(t: ptr WlrXdgToplevel, activated: bool): uint32 {.importc: "wlr_xdg_toplevel_set_activated", header: "wlr/types/wlr_xdg_shell.h".}
 proc wlrXdgToplevelSetSize*(t: ptr WlrXdgToplevel, w, h: cint): uint32 {.importc: "wlr_xdg_toplevel_set_size", header: "wlr/types/wlr_xdg_shell.h".}
 proc wlrXdgSurfaceSurfaceAt*(s: ptr WlrXdgSurface, sx, sy: cdouble, subX, subY: ptr cdouble): ptr WlrSurface {.importc: "wlr_xdg_surface_surface_at", header: "wlr/types/wlr_xdg_shell.h".}
+
+# ---------------------------------------------------------------------------
+# xdg-popup (menu kontekstowe, podpowiedzi itd.)
+# ---------------------------------------------------------------------------
+## NAPRAWIONY BRAK: `onNewXdgSurface` (toplevel.nim) wcześniej ignorowało
+## wszystko poza `WlrXdgSurfaceRoleToplevel` -- więc popupy (typowo: menu
+## kontekstowe klienta, podpowiedzi, autouzupełnianie) w ogóle się nie
+## wyświetlały. `wlr_xdg_popup` niesie referencję do surface'u-rodzica i
+## pozycjonera (ustawionego przez klienta przez `xdg_positioner` --
+## wyliczanie samej pozycji z reguł pozycjonera robi za nas
+## `wlr_xdg_surface_schedule_configure`/wlroots wewnętrznie, nie musimy
+## odtwarzać tej logiki ręcznie).
+type
+  WlrXdgPopup* {.importc: "struct wlr_xdg_popup", header: "wlr/types/wlr_xdg_shell.h", incompleteStruct.} = object
+    base* {.importc: "base".}: ptr WlrXdgSurface
+    parent* {.importc: "parent".}: ptr WlrSurface
+
+  WlrXdgSurfacePopupField* {.importc: "struct wlr_xdg_surface", header: "wlr/types/wlr_xdg_shell.h", incompleteStruct.} = object
+    popup* {.importc: "popup".}: ptr WlrXdgPopup
+
+  WlrXdgSurfaceNewPopupEvents* {.importc: "struct wlr_xdg_surface", header: "wlr/types/wlr_xdg_shell.h", incompleteStruct.} = object
+    newPopup* {.importc: "events.new_popup".}: WlSignal
+
+proc xdgSurfacePopup*(s: ptr WlrXdgSurface): ptr WlrXdgPopup {.inline.} =
+  cast[ptr WlrXdgSurfacePopupField](s).popup
+proc xdgSurfaceNewPopupEvents*(s: ptr WlrXdgSurface): ptr WlrXdgSurfaceNewPopupEvents {.inline.} =
+  cast[ptr WlrXdgSurfaceNewPopupEvents](s)
+proc wlrXdgSurfaceTryFromWlrSurface*(s: ptr WlrSurface): ptr WlrXdgSurface {.importc: "wlr_xdg_surface_try_from_wlr_surface", header: "wlr/types/wlr_xdg_shell.h".}
+
+# ---------------------------------------------------------------------------
+# wlr-layer-shell-v1 (panele/paski dokowane do krawędzi ekranu -- launcher,
+# statusbar, powiadomienia, itp.)
+# ---------------------------------------------------------------------------
+## NAPRAWIONY BRAK: kompozytor w ogóle nie tworzył globalnego obiektu
+## `zwlr_layer_shell_v1` -- klienci mówiący tym protokołem (np. `waybar`,
+## `wofi`, `mako`, albo w przyszłości zde-shell po stronie klienckiej, patrz
+## uwaga w apps/settings dot. tego ograniczenia) nie mieli jak się nawet
+## podłączyć. Protokół wymaga wygenerowanego nagłówka
+## `wlr-layer-shell-unstable-v1-protocol.h` (patrz wlcomp/protocol-src/ i
+## `build.janet`) -- Ubuntu go nie pakietuje, więc jest zrekonstruowany z
+## oficjalnej specyfikacji wlr-protocols w tym repo.
+type
+  WlrLayerShellV1* {.importc: "struct wlr_layer_shell_v1", header: "wlr/types/wlr_layer_shell_v1.h", incompleteStruct.} = object
+  WlrLayerShellV1Events* {.importc: "struct wlr_layer_shell_v1", header: "wlr/types/wlr_layer_shell_v1.h", incompleteStruct.} = object
+    newSurface* {.importc: "events.new_surface".}: WlSignal
+
+  WlrLayerSurfaceV1State* {.importc: "struct wlr_layer_surface_v1_state", header: "wlr/types/wlr_layer_shell_v1.h".} = object
+    committed*: uint32
+    anchor*: uint32
+    exclusiveZone* {.importc: "exclusive_zone".}: int32
+    marginTop* {.importc: "margin.top".}: int32
+    marginRight* {.importc: "margin.right".}: int32
+    marginBottom* {.importc: "margin.bottom".}: int32
+    marginLeft* {.importc: "margin.left".}: int32
+    keyboardInteractive* {.importc: "keyboard_interactive".}: cint
+    desiredWidth* {.importc: "desired_width".}: uint32
+    desiredHeight* {.importc: "desired_height".}: uint32
+    layer*: cint
+    configureSerial* {.importc: "configure_serial".}: uint32
+    actualWidth* {.importc: "actual_width".}: uint32
+    actualHeight* {.importc: "actual_height".}: uint32
+
+  WlrLayerSurfaceV1* {.importc: "struct wlr_layer_surface_v1", header: "wlr/types/wlr_layer_shell_v1.h", incompleteStruct.} = object
+    surface* {.importc: "surface".}: ptr WlrSurface
+    output* {.importc: "output".}: ptr WlrOutput
+    namespace0* {.importc: "namespace".}: cstring
+    current*: WlrLayerSurfaceV1State
+    pending*: WlrLayerSurfaceV1State
+
+  WlrLayerSurfaceV1Events* {.importc: "struct wlr_layer_surface_v1", header: "wlr/types/wlr_layer_shell_v1.h", incompleteStruct.} = object
+    destroy* {.importc: "events.destroy".}: WlSignal
+    newPopup* {.importc: "events.new_popup".}: WlSignal
+
+  WlrSceneLayerSurfaceV1* {.importc: "struct wlr_scene_layer_surface_v1", header: "wlr/types/wlr_scene.h", incompleteStruct.} = object
+    tree* {.importc: "tree".}: ptr WlrSceneTree
+    layerSurface* {.importc: "layer_surface".}: ptr WlrLayerSurfaceV1
+
+const
+  ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND*: cint = 0
+  ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM*: cint = 1
+  ZWLR_LAYER_SHELL_V1_LAYER_TOP*: cint = 2
+  ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY*: cint = 3
+
+  ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP*: uint32 = 1
+  ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM*: uint32 = 2
+  ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT*: uint32 = 4
+  ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT*: uint32 = 8
+
+proc wlrLayerShellV1Create*(display: ptr WlDisplay, version: uint32): ptr WlrLayerShellV1 {.importc: "wlr_layer_shell_v1_create", header: "wlr/types/wlr_layer_shell_v1.h".}
+proc layerShellEvents*(s: ptr WlrLayerShellV1): ptr WlrLayerShellV1Events {.inline.} = cast[ptr WlrLayerShellV1Events](s)
+proc layerSurfaceEvents*(s: ptr WlrLayerSurfaceV1): ptr WlrLayerSurfaceV1Events {.inline.} = cast[ptr WlrLayerSurfaceV1Events](s)
+proc wlrLayerSurfaceV1Configure*(s: ptr WlrLayerSurfaceV1, width, height: uint32): uint32 {.importc: "wlr_layer_surface_v1_configure", header: "wlr/types/wlr_layer_shell_v1.h".}
+proc wlrLayerSurfaceV1Destroy*(s: ptr WlrLayerSurfaceV1) {.importc: "wlr_layer_surface_v1_destroy", header: "wlr/types/wlr_layer_shell_v1.h".}
+proc wlrOutputEffectiveResolution*(o: ptr WlrOutput, width, height: ptr cint) {.importc: "wlr_output_effective_resolution", header: "wlr/types/wlr_output.h".}
+proc wlrLayerSurfaceV1TryFromWlrSurface*(s: ptr WlrSurface): ptr WlrLayerSurfaceV1 {.importc: "wlr_layer_surface_v1_try_from_wlr_surface", header: "wlr/types/wlr_layer_shell_v1.h".}
+proc wlrSceneLayerSurfaceV1Create*(parent: ptr WlrSceneTree, layerSurface: ptr WlrLayerSurfaceV1): ptr WlrSceneLayerSurfaceV1 {.importc: "wlr_scene_layer_surface_v1_create", header: "wlr/types/wlr_scene.h".}
+proc wlrSceneLayerSurfaceV1Configure*(sceneLayerSurface: ptr WlrSceneLayerSurfaceV1, fullArea, usableArea: ptr WlrBox) {.importc: "wlr_scene_layer_surface_v1_configure", header: "wlr/types/wlr_scene.h".}
+
+proc layerNamespace*(s: ptr WlrLayerSurfaceV1): string =
+  if s.namespace0 == nil: "" else: $s.namespace0
 
 # --- wlr_surface: map / unmap / destroy / commit sygnały -------------------
 
@@ -317,10 +435,13 @@ type
     button* {.importc: "button".}: uint32
     state* {.importc: "state".}: cint
 
-  WlrPointerAxisEvent* {.importc: "struct wlr_pointer_axis_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+  WlrPointerAxisEvent* {.importc: "struct wlr_pointer_axis_event", header: "wlr/types/wlr_pointer.h".} = object
+    pointer*: pointer
     timeMsec* {.importc: "time_msec".}: uint32
-    orientation* {.importc: "orientation".}: cint
-    delta* {.importc: "delta".}: cdouble
+    source* {.importc: "source".}: cint          ## enum wlr_axis_source
+    orientation* {.importc: "orientation".}: cint ## enum wlr_axis_orientation
+    delta*: cdouble
+    deltaDiscrete* {.importc: "delta_discrete".}: int32
 
 const
   WlrInputDeviceKeyboard*: WlrInputDeviceType = 0
@@ -386,8 +507,50 @@ proc wlrSeatKeyboardNotifyModifiers*(seat: ptr WlrSeat, modifiers: pointer) {.im
 proc wlrSeatPointerNotifyEnter*(seat: ptr WlrSeat, surface: ptr WlrSurface, sx, sy: cdouble) {.importc: "wlr_seat_pointer_notify_enter", header: "wlr/types/wlr_seat.h".}
 proc wlrSeatPointerNotifyMotion*(seat: ptr WlrSeat, timeMsec: uint32, sx, sy: cdouble) {.importc: "wlr_seat_pointer_notify_motion", header: "wlr/types/wlr_seat.h".}
 proc wlrSeatPointerNotifyButton*(seat: ptr WlrSeat, timeMsec, button, state: uint32): uint32 {.importc: "wlr_seat_pointer_notify_button", header: "wlr/types/wlr_seat.h".}
+proc wlrSeatPointerNotifyAxis*(seat: ptr WlrSeat, timeMsec: uint32, orientation: cint, value: cdouble, valueDiscrete: int32, source: cint) {.importc: "zde_seat_pointer_notify_axis", header: "shim.h".}
 proc wlrSeatPointerNotifyFrame*(seat: ptr WlrSeat) {.importc: "wlr_seat_pointer_notify_frame", header: "wlr/types/wlr_seat.h".}
 proc wlrSeatPointerNotifyClearFocus*(seat: ptr WlrSeat) {.importc: "wlr_seat_pointer_notify_clear_focus", header: "wlr/types/wlr_seat.h".}
+
+# ---------------------------------------------------------------------------
+# Schowek (selection/data-device) i drag & drop
+# ---------------------------------------------------------------------------
+## NAPRAWIONY BRAK: `wlr_data_device_manager_create()` był wołany (main.nim)
+## -- to samo w sobie wystawia klientom protokół `wl_data_device_manager` --
+## ale kompozytor nigdy nie SŁUCHAŁ zgłoszeń od seata
+## (`request_set_selection`/`request_start_drag`), więc: kopiowanie/wklejanie
+## między aplikacjami (schowek) i przeciąganie-i-upuszczanie w ogóle nie
+## działały, mimo że sam protokół był technicznie dostępny.
+type
+  WlrDataSource* {.importc: "struct wlr_data_source", header: "wlr/types/wlr_data_device.h", incompleteStruct.} = object
+
+  WlrSeatRequestSetSelectionEvent* {.importc: "struct wlr_seat_request_set_selection_event", header: "wlr/types/wlr_seat.h", incompleteStruct.} = object
+    source* {.importc: "source".}: ptr WlrDataSource
+    serial*: uint32
+
+  WlrDrag* {.importc: "struct wlr_drag", header: "wlr/types/wlr_data_device.h", incompleteStruct.} = object
+    icon* {.importc: "icon".}: ptr WlrDragIcon
+
+  WlrDragIcon* {.importc: "struct wlr_drag_icon", header: "wlr/types/wlr_data_device.h", incompleteStruct.} = object
+    surface* {.importc: "surface".}: ptr WlrSurface
+
+  WlrSeatRequestStartDragEvent* {.importc: "struct wlr_seat_request_start_drag_event", header: "wlr/types/wlr_seat.h", incompleteStruct.} = object
+    drag* {.importc: "drag".}: ptr WlrDrag
+    origin* {.importc: "origin".}: ptr WlrSurface
+    serial*: uint32
+
+  WlrDragEvents* {.importc: "struct wlr_drag", header: "wlr/types/wlr_data_device.h", incompleteStruct.} = object
+    destroy* {.importc: "events.destroy".}: WlSignal
+
+  WlrSeatEvents* {.importc: "struct wlr_seat", header: "wlr/types/wlr_seat.h", incompleteStruct.} = object
+    requestSetSelection* {.importc: "events.request_set_selection".}: WlSignal
+    requestStartDrag* {.importc: "events.request_start_drag".}: WlSignal
+    startDrag* {.importc: "events.start_drag".}: WlSignal
+
+proc seatEvents*(s: ptr WlrSeat): ptr WlrSeatEvents {.inline.} = cast[ptr WlrSeatEvents](s)
+proc wlrSeatSetSelection*(seat: ptr WlrSeat, source: ptr WlrDataSource, serial: uint32) {.importc: "wlr_seat_set_selection", header: "wlr/types/wlr_seat.h".}
+proc wlrSeatStartPointerDrag*(seat: ptr WlrSeat, drag: ptr WlrDrag, serial: uint32) {.importc: "wlr_seat_start_pointer_drag", header: "wlr/types/wlr_seat.h".}
+proc wlrSceneDragIconCreate*(parent: ptr WlrSceneTree, dragIcon: ptr WlrDragIcon): ptr WlrSceneTree {.importc: "wlr_scene_drag_icon_create", header: "wlr/types/wlr_scene.h".}
+proc dragEvents*(d: ptr WlrDrag): ptr WlrDragEvents {.inline.} = cast[ptr WlrDragEvents](d)
 
 proc wlrCursorCreate*(): ptr WlrCursor {.importc: "wlr_cursor_create", header: "wlr/types/wlr_cursor.h".}
 proc wlrCursorAttachOutputLayout*(cur: ptr WlrCursor, layout: ptr WlrOutputLayout) {.importc: "wlr_cursor_attach_output_layout", header: "wlr/types/wlr_cursor.h".}
