@@ -7,6 +7,7 @@ import ../apps/clock/clockapp
 import ../apps/texteditor/texteditor
 import ../apps/calculator/calculator
 import ../apps/sysmonitor/sysmonitor
+import ../apps/settings/settings
 import state
 
 proc launchTerminal*() =
@@ -64,6 +65,14 @@ proc launchSysMonitor*() =
   )
   win.onClose = proc(w: ZdeWindow) =
     sysmonitors.keepItIf(it != sm)
+
+proc launchSettings*() =
+  let ss = newSettingsState()
+  discard compositor.openWindow(
+    "Ustawienia", wkSettings,
+    size = vec2(620, 620),
+    drawBody = proc(w: ZdeWindow) = drawSettings(ss, w),
+  )
 
 proc launchAbout*() =
   discard compositor.openWindow(
