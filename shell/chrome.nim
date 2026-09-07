@@ -11,7 +11,10 @@ proc drawWindowChrome*(win: ZdeWindow) =
     fill "#000000", 0.0
     stroke borderColor
     strokeWeight (if isFocused: 1.5 else: 1.0)
-    zLevel win.zIndex
+    ## Jw. -- `zLevel win.zIndex` był no-opem (nic go nie czyta w silniku
+    ## Fidget). Prawdziwy z-order między oknami zapewnia teraz kolejność
+    ## iteracji `compositor.windowsInZOrder().reversed()` w `drawMain()`
+    ## (shell.nim) -- najwyższe okno z-index deklarowane jako pierwsze.
 
     onMouseDown:
       if compositor.focusedId != win.id:
