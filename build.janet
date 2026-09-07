@@ -261,6 +261,14 @@
             "libXi-devel" "libXxf86vm-devel" "glfw-devel" "Mesa-libGL-devel"]
    :apk ["libx11-dev" "libxrandr-dev" "libxinerama-dev" "libxcursor-dev" "libxi-dev"
          "glfw-dev" "mesa-dev"]})
+## PAM (nagłówki deweloperskie) -- potrzebne przez apps/session/pam_shim.c
+## (prawdziwe uwierzytelnienie ekranu blokady, patrz NAPRAWY.md runda 5).
+## Nazwa pakietu binarnego (`libpam0g` na Debianie/Ubuntu) różni się od
+## nazwy pakietu -dev na innych dystrybucjach, stąd osobna mapa zamiast
+## doklejania do dep-x11-glfw-libs.
+(def dep-pam-dev
+  {:apt ["libpam0g-dev"] :dnf ["pam-devel"] :pacman ["pam"]
+   :zypper ["pam-devel"] :apk ["linux-pam-dev"]})
 
 # ---------------------------------------------------------------------
 # Sprawdzenie zależności systemowych
@@ -305,6 +313,16 @@
   (def out (capture-shell (string "gcc -print-file-name=lib" libName ".so")))
   (and (not (empty? out)) (not= out (string "lib" libName ".so"))))
 
+(defn header-exists? [header]
+  "Sprawdza, czy nagłówek C faktycznie da się włączyć -- próbą
+   kompilacji trywialnego pliku, tak samo w duchu jak linker-lib-exists?
+   sprawdza bibliotekę pytając bezpośrednio narzędzie, które będzie tego
+   faktycznie potrzebować (gcc), zamiast zgadywać po plikach na dysku."
+  (def out (capture-shell
+             (string "echo 'int main(void){return 0;}' | "
+                     "gcc -x c -include " header " -o /dev/null - 2>&1 && echo OK")))
+  (= (string/trim out) "OK"))
+
 (defn check-shell-common-deps []
   "Biblioteki X11/GLFW/GL potrzebne PRZY LINKOWANIU zde-shell niezależnie
    od wybranego backendu (`staticglfw` linkuje je bezwarunkowo, także w
@@ -320,13 +338,33 @@
     "zainstaluj nagłówki deweloperskie X11 (w tym legacy Xxf86vm) + GLFW3 + OpenGL ręcznie.")
   (log "OK: biblioteki X11/GL."))
 
+(defn check-session-deps []
+  "Nagłówki PAM -- potrzebne przez apps/session/pam_shim.c (prawdziwe
+   uwierzytelnienie ekranu blokady, patrz NAPRAWY.md runda 5). Bez tego
+   sprawdzenia build padał dopiero w środku kompilacji zde-shell z gołym
+   `fatal error: security/pam_appl.h: No such file or directory` -- ten
+   sam problem jakościowy co brakujące biblioteki X11/GLFW przed dodaniem
+   check-shell-common-deps, więc ten sam wzorzec naprawy."
+  (log "sprawdzam nagłówki PAM (ekran blokady, apps/session/pam_shim.c)...")
+  (ensure-system-dep
+    (fn [] (header-exists? "security/pam_appl.h"))
+    dep-pam-dev "nagłówki PAM (libpam)"
+    "zainstaluj nagłówki deweloperskie PAM ręcznie (np. `libpam0g-dev` na Debianie/Ubuntu).")
+  (log "OK: nagłówki PAM."))
+
 # ---------------------------------------------------------------------
 # Generowanie nagłówków protokołów Wayland (dla zde-comp i zde-shell)
 # ---------------------------------------------------------------------
 
 (def server-protocols
   # [nazwa-wyjściowa ścieżka-do-xml]
-  [["xdg-shell" (string wayland-protocols-dir "/stable/xdg-shell/xdg-shell.xml")]])
+  # `wlr-layer-shell-unstable-v1` NIE jest częścią pakietu `wayland-protocols`
+  # (to protokół specyficzny dla wlroots, nie ogólnowaylandowy) -- Ubuntu i
+  # większość dystrybucji go nie pakietuje. Trzymamy własną kopię XML w
+  # `wlcomp/protocol-src/` (odtworzoną z oficjalnej specyfikacji
+  # wlr-protocols, MIT), zamiast zależeć od jego obecności w systemie.
+  [["xdg-shell" (string wayland-protocols-dir "/stable/xdg-shell/xdg-shell.xml")]
+   ["wlr-layer-shell-unstable-v1" (string wlcomp-dir "/protocol-src/wlr-layer-shell-unstable-v1.xml")]])
 
 (def client-protocols
   [["xdg-shell" (string wayland-protocols-dir "/stable/xdg-shell/xdg-shell.xml")]
@@ -468,6 +506,10 @@
   # X11/GLFW linkuje się bezwarunkowo (patrz komentarz w check-shell-common-deps)
   # -- sprawdzamy to NIEZALEŻNIE od wybranego backendu, nie tylko dla :x11.
   (check-shell-common-deps)
+  # PAM (ekran blokady, apps/session/pam_shim.c) -- tak samo bezwarunkowo,
+  # niezależnie od backendu (apps/session/ jest kompilowane do zde-shell
+  # zawsze, nie tylko w wariancie X11).
+  (check-session-deps)
   (if (= backend :wayland)
     (do
       (ensure-pkgconfig ["wayland-client"] dep-wayland-dev "wayland-client"
