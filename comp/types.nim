@@ -5,6 +5,7 @@ type
     wkTerminal
     wkFileManager
     wkAbout
+    wkSettings
     wkGeneric
 
   ResizeEdge* = enum
