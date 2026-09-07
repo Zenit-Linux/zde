@@ -2,8 +2,14 @@ import std/sequtils
 import wlroots
 import types
 import toplevel
+import ../zdeconfig
 
 proc processCursorMotion*(server: Server, timeMsec: uint32) =
+  if server.dragIconTree != nil:
+    ## Ikonka przeciąganego obiektu (drag&drop) jedzie razem z kursorem,
+    ## niezależnie od trybu (move/resize/passthrough) -- patrz seatext.nim.
+    wlrSceneNodeSetPosition(treeNode(server.dragIconTree), cint(server.cursor.x), cint(server.cursor.y))
+
   case server.cursorMode
   of cmMove:
     if server.grabbed != nil:
@@ -56,9 +62,24 @@ proc onCursorButton*(listener: ptr WlListener, data: pointer) {.cdecl.} =
       focusToplevel(t)
 
 proc onCursorAxis*(listener: ptr WlListener, data: pointer) {.cdecl.} =
+  ## NAPRAWIONY BRAK: przewijanie (scroll) było odrzucane (`discard event`)
+  ## zamiast przekazane do klienta z fokusem wskaźnika -- więc scroll
+  ## kółkiem myszy nie działał w ŻADNEJ aplikacji uruchomionej pod
+  ## zde-comp. `wlr_seat_pointer_notify_axis` przekazuje zdarzenie do
+  ## powierzchni z aktualnym fokusem (uwzględniając ewentualny grab), tak
+  ## jak `wlr_seat_pointer_notify_motion`/`_button` już były przekazywane
+  ## wyżej -- to samo trzeba było zrobić dla osi (scrolla), tylko
+  ## wcześniej tego brakowało. (Naprawiony też błąd zgłoszony przy
+  ## realnym buildzie na wlroots 0.20: `wlr_seat_pointer_notify_axis()`
+  ## od 0.18.0 przyjmuje dodatkowy 7. argument, `relative_direction` --
+  ## rozwiązane C-shimem w shim.c, ten sam wzorzec co reszta niezgodności
+  ## wersji w tym pliku, patrz NAPRAWY.md.)
   let server = containerOf(listener, Server, ServerObj, cursorAxisL)
   let event = cast[ptr WlrPointerAxisEvent](data)
-  discard event  # TODO: przewijanie (scroll) w aplikacjach -- v2
+  wlrSeatPointerNotifyAxis(
+    server.seat, event.timeMsec, event.orientation, event.delta,
+    event.deltaDiscrete, event.source,
+  )
 
 proc onCursorFrame*(listener: ptr WlListener, data: pointer) {.cdecl.} =
   let server = containerOf(listener, Server, ServerObj, cursorFrameL)
@@ -85,14 +106,39 @@ proc onKeyboardDestroy*(listener: ptr WlListener, data: pointer) {.cdecl.} =
   zdeListRemove(addr kb.destroyL.link)
   kb.server.keyboards.keepItIf(it != kb)
 
+proc buildKeymap(layout: string): ptr XkbKeymap =
+  let ctx = xkbContextNew(0)
+  var names: XkbRuleNames
+  names.layout = layout.cstring
+  xkbKeymapNewFromNames(ctx, addr names, 0)
+
+proc reloadKeyboardLayouts*(server: Server) =
+  ## Wołane z obsługi SIGHUP (main.nim) -- ponownie wczytuje
+  ## `xkbLayout` z configu i nakłada nową mapę klawiszy na WSZYSTKIE
+  ## aktualnie podłączone klawiatury, bez restartu kompozytora ani
+  ## rozłączania klientów. `wlr_keyboard_set_keymap` samo wysyła klientom
+  ## zaktualizowaną mapę (przez `keymap` na `wl_keyboard`).
+  let cfg = zdeconfig.loadConfig()
+  let keymap = buildKeymap(cfg.xkbLayout)
+  var count = 0
+  for kb in server.keyboards:
+    discard wlrKeyboardSetKeymap(kb.wlrKeyboard, keymap)
+    inc count
+  stderr.writeLine("zde-comp: przeładowano układ klawiatury (\"" & cfg.xkbLayout & "\") na " & $count & " urządzeniach")
+
 proc setupKeyboard*(server: Server, dev: ptr WlrInputDevice) =
   let wlrKb = wlrKeyboardFromInputDevice(dev)
   let kb = Keyboard(server: server, wlrKeyboard: wlrKb)
 
-  let ctx = xkbContextNew(0)
-  var names: XkbRuleNames
-  names.layout = "us"
-  let keymap = xkbKeymapNewFromNames(ctx, addr names, 0)
+  ## NAPRAWIONY BRAK: układ klawiatury był na sztywno "us", niezależnie od
+  ## tego, co użytkownik ustawiłby w aplikacji "Ustawienia"
+  ## (apps/settings/settings.nim, pole `xkbLayout` w zdeconfig.nim). Teraz
+  ## czytamy to z tego samego pliku konfiguracyjnego co Ustawienia --
+  ## zmiana układu w UI i SIGHUP do zde-comp (patrz `reloadKeyboardLayouts`
+  ## wyżej i obsługa sygnału w main.nim) faktycznie coś zmienia, bez
+  ## restartu.
+  let cfg = zdeconfig.loadConfig()
+  let keymap = buildKeymap(cfg.xkbLayout)
   discard wlrKeyboardSetKeymap(wlrKb, keymap)
   wlrKeyboardSetRepeatInfo(wlrKb, 25, 600)
 
