@@ -1,6 +1,7 @@
 import std/sequtils
 import wlroots
 import types
+import popup
 
 proc focusToplevel*(t: Toplevel) =
   let server = t.server
@@ -47,14 +48,23 @@ proc onToplevelRequestResize*(listener: ptr WlListener, data: pointer) {.cdecl.}
   server.cursorMode = cmResize
   server.grabbed = t
 
+proc onToplevelNewPopup*(listener: ptr WlListener, data: pointer) {.cdecl.} =
+  let t = containerOf(listener, Toplevel, ToplevelObj, newPopupL)
+  let popup = cast[ptr WlrXdgPopup](data)
+  handleNewPopup(t.server, popup.base)
+
 proc onNewXdgSurface*(listener: ptr WlListener, data: pointer) {.cdecl.} =
   let server = containerOf(listener, Server, ServerObj, newXdgSurfaceL)
   let xdgSurface = cast[ptr WlrXdgSurface](data)
+
+  if xdgSurface.role == WlrXdgSurfaceRolePopup:
+    handleNewPopup(server, xdgSurface)
+    return
   if xdgSurface.role != WlrXdgSurfaceRoleToplevel:
-    return  # popupy pomijamy w v1 (patrz komentarz o zakresie w main.nim)
+    return
 
   let t = Toplevel(server: server, xdgSurface: xdgSurface)
-  t.sceneTree = wlrSceneXdgSurfaceCreate(cast[ptr WlrSceneTree](server.scene), xdgSurface)
+  t.sceneTree = wlrSceneXdgSurfaceCreate(server.toplevelTree, xdgSurface)
   t.sceneTree.node.data = cast[pointer](t)
 
   zdeSignalAdd(addr surfaceEvents(xdgSurface.surface).map, addr t.mapL, onToplevelMap)
@@ -63,6 +73,11 @@ proc onNewXdgSurface*(listener: ptr WlListener, data: pointer) {.cdecl.} =
   if xdgSurface.toplevel != nil:
     zdeSignalAdd(addr xdgToplevelEvents(xdgSurface.toplevel).requestMove, addr t.requestMoveL, onToplevelRequestMove)
     zdeSignalAdd(addr xdgToplevelEvents(xdgSurface.toplevel).requestResize, addr t.requestResizeL, onToplevelRequestResize)
+  ## NAPRAWIONY BRAK: okna xdg-shell mogą tworzyć popupy (menu, podpowiedzi)
+  ## zaczepione o SIEBIE, nie tylko o powierzchnie najwyższego poziomu --
+  ## `new_popup` na `xdg_surface` samego toplevelu to sygnał na te
+  ## przypadki (patrz popup.nim -- ten sam handler obsługuje oba źródła).
+  zdeSignalAdd(addr xdgSurfaceNewPopupEvents(xdgSurface).newPopup, addr t.newPopupL, onToplevelNewPopup)
 
 proc toplevelAt*(server: Server, lx, ly: cdouble): Toplevel =
   ## Trafienie w scenie (np. bufor konkretnej powierzchni) nie ma samo w sobie
