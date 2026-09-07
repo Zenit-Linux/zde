@@ -18,6 +18,7 @@ type
     lastClickTime: float
     lastClickName: string
     errorMsg: string
+    scrollOffset: float32  ## przesunięcie w pikselach listy plików (scroll kółkiem myszy)
 
 proc humanSize(bytes: BiggestInt): string =
   const units = ["B", "KB", "MB", "GB", "TB"]
@@ -73,6 +74,7 @@ proc navigateTo(fs: FilesState, path: string) =
   if dirExists(normalized):
     fs.cwd = normalized
     fs.selected = ""
+    fs.scrollOffset = 0.0
     refresh(fs)
 
 proc navigateUp(fs: FilesState) =
@@ -154,6 +156,20 @@ proc drawFileManager*(fs: FilesState, win: ZdeWindow) =
       box 0, toolbarH + breadcrumbH, win.size.x, win.size.y - toolbarH - breadcrumbH
       clipContent true
 
+      ## NAPRAWIONY BRAK: lista miała `clipContent true`, ale nigdy nie
+      ## śledziła przesunięcia scrolla -- w katalogu z więcej wpisami niż
+      ## mieściło się w oknie, reszta była po prostu ucięta bez możliwości
+      ## przewinięcia. `onHover` + `mouse.wheelDelta` (Fidget nie ma
+      ## wbudowanego automatycznego scrolla dla zwykłych grup -- trzeba
+      ## ręcznie doliczać przesunięcie i użyć go przy pozycjonowaniu
+      ## wierszy, patrz `y` niżej).
+      let listH = win.size.y - toolbarH - breadcrumbH
+      let contentH = float32(fs.entries.len) * rowH
+      let maxScroll = max(0.0'f32, contentH - listH)
+      onHover:
+        if mouse.wheelDelta != 0:
+          fs.scrollOffset = clamp(fs.scrollOffset - mouse.wheelDelta * rowH, 0.0'f32, maxScroll)
+
       if fs.errorMsg.len > 0:
         text "err":
           box pad, pad, win.size.x - pad * 2, 40
@@ -167,7 +183,7 @@ proc drawFileManager*(fs: FilesState, win: ZdeWindow) =
           fill "#8a8f96"
           characters "(pusty katalog)"
       else:
-        var y = 0.0'f32
+        var y = -fs.scrollOffset
         for entry in fs.entries:
           let isSelected = entry.name == fs.selected
           group "row-" & entry.name:
