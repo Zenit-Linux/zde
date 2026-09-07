@@ -2,13 +2,27 @@ import fidget
 import ../comp/comp
 import state
 import launcher_apps
+import ../apps/session/session
+
+proc doLockScreen() = lockScreen()
+proc doLogout() = logout()
 
 proc drawTaskbar*() =
   let y = windowSize.y - TaskbarHeight
   frame "taskbar":
     box 0, y, windowSize.x, TaskbarHeight
     fill PanelBg
-    zLevel 10_000  # zawsze na wierzchu, ponad wszystkimi oknami
+    ## `zLevel` W FIDGET TO DE FACTO NO-OP -- patrz duży komentarz w
+    ## `shell.nim` przy `drawMain()`. Sprawdzone w źródle `treeform/fidget`
+    ## (src/fidget/common.nim, src/fidget.nim): pole `node.zLevel` jest
+    ## ustawiane, ale NIC w silniku rysującym (`openglbackend.draw`) ani w
+    ## hit-teście go nie odczytuje -- wcześniejsze `zLevel 10_000` tutaj nie
+    ## robiło NIC i mogło mylnie sugerować, że o kolejność z-order dba się
+    ## przez tę linię. Rzeczywista kolejność z-order paska zadań ponad
+    ## oknami jest zapewniona przez KOLEJNOŚĆ WYWOŁAŃ w `drawMain()`
+    ## (`shell.nim`) -- `drawTaskbar()` jest tam deklarowane PRZED oknami i
+    ## tłem, co przy odwróconej semantyce rysowania Fidget (pierwszy
+    ## zadeklarowany = na wierzchu) daje pasek zadań na wierzchu.
 
     group "launcher-btn":
       box 6, 4, 90, TaskbarHeight - 8
@@ -64,6 +78,9 @@ proc drawLauncher*() =
     ("📝  Edytor tekstu", launchTextEditor),
     ("🧮  Kalkulator", launchCalculator),
     ("📊  Monitor systemu", launchSysMonitor),
+    ("⚙  Ustawienia", launchSettings),
+    ("🔒  Zablokuj ekran", doLockScreen),
+    ("⏻  Wyloguj", doLogout),
     ("ℹ  O systemie", launchAbout),
   ]
   let h = float32(items.len) * itemH + 12
@@ -75,7 +92,9 @@ proc drawLauncher*() =
     stroke "#333b45"
     strokeWeight 1
     cornerRadius 6
-    zLevel 20_000
+    ## Jw. -- `zLevel` nic tu nie robi. Launcher jest na wierzchu paska
+    ## zadań i okien, bo `drawMain()` woła `drawLauncher()` jako PIERWSZE
+    ## (patrz komentarz w shell.nim).
 
     onClickOutside:
       compositor.launcherOpen = false
