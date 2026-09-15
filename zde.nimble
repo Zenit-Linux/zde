@@ -1,7 +1,7 @@
 version       = "0.1.0"
-author        = "Zenit Linux"
+author        = "Zenit Linux Developers"
 description   = "Zenit Desktop Environment (ZDE) -- srodowisko graficzne Zenit Linux, w Nimie + Fidget"
-license       = "MIT"
+license       = "BSD-3"
 srcDir        = "."
 skipDirs      = @["wlcomp", "apps", "comp", "dist"]
 bin           = @["shell/shell"]
