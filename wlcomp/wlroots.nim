@@ -97,6 +97,17 @@ type
 proc wlEventLoopAddSignal*(loop: ptr WlEventLoop, signalNumber: cint,
                             fn: proc(signalNumber: cint, data: pointer): cint {.cdecl.},
                             data: pointer): ptr WlEventSource {.importc: "wl_event_loop_add_signal", header: "<wayland-server-core.h>".}
+## Rozbudowa v0.1 ("Aurora"/DPMS) -- patrz `wlcomp/idle.nim`. Ten sam
+## mechanizm co `wlEventLoopAddSignal` wyżej (funkcja zwrotna wołana z
+## głównej pętli zdarzeń), tylko po upływie czasu zamiast sygnału POSIX --
+## `wl_event_source_timer_update` UZBRAJA/PRZEuzbraja timer na kolejne
+## `msDelay` milisekund (jednorazowo -- callback musi sam się przezbroić
+## na następne wywołanie, jeśli ma tykać cyklicznie, patrz `checkIdle` w
+## `wlcomp/idle.nim`).
+proc wlEventLoopAddTimer*(loop: ptr WlEventLoop,
+                           fn: proc(data: pointer): cint {.cdecl.},
+                           data: pointer): ptr WlEventSource {.importc: "wl_event_loop_add_timer", header: "<wayland-server-core.h>".}
+proc wlEventSourceTimerUpdate*(source: ptr WlEventSource, msDelay: cint): cint {.importc: "wl_event_source_timer_update", header: "<wayland-server-core.h>".}
 proc wlDisplayAddSocketAuto*(d: ptr WlDisplay): cstring {.importc: "wl_display_add_socket_auto", header: "<wayland-server-core.h>".}
 proc wlDisplayRun*(d: ptr WlDisplay) {.importc: "wl_display_run", header: "<wayland-server-core.h>".}
 proc wlDisplayDestroyClients*(d: ptr WlDisplay) {.importc: "wl_display_destroy_clients", header: "<wayland-server-core.h>".}
@@ -137,7 +148,18 @@ type
   WlrRenderer* {.importc: "struct wlr_renderer", header: "wlr/render/wlr_renderer.h", incompleteStruct.} = object
   WlrAllocator* {.importc: "struct wlr_allocator", header: "wlr/render/allocator.h", incompleteStruct.} = object
 
-proc wlrBackendAutocreate*(display: ptr WlDisplay): ptr WlrBackend {.importc: "zde_backend_autocreate", header: "shim.h".}
+  ## Rozbudowa v0.1 ("Aurora"/DRM) -- zadeklarowane już tutaj (nie w sekcji
+  ## "Sesja / przełączanie VT" niżej), bo `wlrBackendAutocreate` poniżej
+  ## potrzebuje tego typu w swojej sygnaturze (Nim wymaga zadeklarowania
+  ## typu przed użyciem, nawet jako `ptr ptr`). Osobny typ
+  ## `WlrSessionEvents` (dalej w pliku) importuje TEN SAM C-struct pod
+  ## innym nimowym typem, tylko po to, żeby dostać się do jego
+  ## zagnieżdżonych `events.*` -- dokładnie ten sam trik co
+  ## `WlrXdgSurface`/`WlrXdgSurfaceEvents` wyżej w tym pliku.
+  WlrSession* {.importc: "struct wlr_session", header: "wlr/backend/session.h", incompleteStruct.} = object
+    active* {.importc: "active".}: bool
+
+proc wlrBackendAutocreate*(display: ptr WlDisplay, sessionOut: ptr ptr WlrSession): ptr WlrBackend {.importc: "zde_backend_autocreate", header: "shim.h".}
 proc wlrBackendStart*(b: ptr WlrBackend): bool {.importc: "wlr_backend_start", header: "wlr/backend.h".}
 proc wlrBackendDestroy*(b: ptr WlrBackend) {.importc: "wlr_backend_destroy", header: "wlr/backend.h".}
 proc backendEvents*(b: ptr WlrBackend): ptr WlrBackendEvents {.inline.} = cast[ptr WlrBackendEvents](b)
@@ -190,6 +212,15 @@ proc outputEvents*(o: ptr WlrOutput): ptr WlrOutputEvents {.inline.} = cast[ptr 
 
 proc wlrOutputInitRender*(o: ptr WlrOutput, alloc: ptr WlrAllocator, r: ptr WlrRenderer): bool {.importc: "wlr_output_init_render", header: "wlr/types/wlr_output.h".}
 proc wlrOutputPreferredMode*(o: ptr WlrOutput): ptr WlrOutputMode {.importc: "wlr_output_preferred_mode", header: "wlr/types/wlr_output.h".}
+## Rozbudowa v0.1 ("Aurora"/DRM): patrz `wlcomp/session.nim` --
+## `wlr_output_schedule_frame` "budzi" wyjście, żeby wysłało kolejne
+## `frame` (i tym samym żeby kompozytor znów zaczął renderować) po
+## odzyskaniu aktywnej sesji (VT). Bez tego wywołania pętla renderowania
+## danego wyjścia zostaje trwale zatrzymana po powrocie z innego VT --
+## `onOutputFrame` samo nie planuje swojej następnej klatki inaczej niż
+## przez odpowiedź na poprzednią (a ta odpowiedź nigdy nie przyszła,
+## skoro DRM nie mogło zrobić page-flipu, gdy VT było nieaktywne).
+proc wlrOutputScheduleFrame*(o: ptr WlrOutput) {.importc: "wlr_output_schedule_frame", header: "wlr/types/wlr_output.h".}
 ## Od wlroots 0.18 konfiguracja wyjścia (tryb/enable/commit) idzie przez
 ## `struct wlr_output_state`, nie przez proste `wlr_output_set_mode` /
 ## `wlr_output_enable` / `wlr_output_commit` (te trzy funkcje zniknęły z
@@ -211,6 +242,13 @@ proc wlrOutputCreateGlobal*(o: ptr WlrOutput, display: ptr WlDisplay) {.importc:
 
 proc wlrOutputLayoutCreate*(display: ptr WlDisplay): ptr WlrOutputLayout {.importc: "zde_output_layout_create", header: "shim.h".}
 proc wlrOutputLayoutAddAuto*(layout: ptr WlrOutputLayout, o: ptr WlrOutput) {.importc: "wlr_output_layout_add_auto", header: "wlr/types/wlr_output_layout.h".}
+## Rozbudowa v0.1 ("Aurora"): granice całego układu monitorów (wszystkie
+## wyjścia razem) w jednym `WlrBox` -- używane do klamrowania geometrii,
+## o jaką proszą okna X11 (`wlcomp/xwayland.nim`, `onXwaylandRequestConfigure`),
+## żeby nie dało się np. otworzyć okna dialogowego całkowicie poza
+## widocznym ekranem. Zweryfikowane wobec prawdziwego nagłówka (patrz
+## `wlr/types/wlr_output_layout.h`).
+proc wlrOutputLayoutGetBox*(layout: ptr WlrOutputLayout, reference: ptr WlrOutput, destBox: ptr WlrBox) {.importc: "wlr_output_layout_get_box", header: "wlr/types/wlr_output_layout.h".}
 proc wlrOutputLayoutAdd*(layout: ptr WlrOutputLayout, o: ptr WlrOutput, lx, ly: cint) {.importc: "wlr_output_layout_add", header: "wlr/types/wlr_output_layout.h".}
 
 proc wlrSceneCreate*(): ptr WlrScene {.importc: "wlr_scene_create", header: "wlr/types/wlr_scene.h".}
@@ -232,6 +270,18 @@ proc wlrSceneNodeSetEnabled*(n: ptr WlrSceneNode, enabled: bool) {.importc: "wlr
 ## bezpośrednio węzeł-korzeń całej sceny, bez potrzeby osobnej funkcji C.
 proc sceneRootNode*(s: ptr WlrScene): ptr WlrSceneNode {.inline.} = cast[ptr WlrSceneNode](s)
 proc treeNode*(t: ptr WlrSceneTree): ptr WlrSceneNode {.inline.} = cast[ptr WlrSceneNode](t)
+
+## Rozbudowa v0.1 ("Aurora"): prostokąt jednolitego koloru w scenie --
+## używany do podświetlenia "następnego" okna przy karuzeli Alt+Tab
+## (patrz `cycleAltTab`/`altTabHighlight` w `wlcomp/toplevel.nim`). Tak
+## jak `WlrSceneTree` powyżej, `wlr_scene_node` jest pierwszym polem
+## `struct wlr_scene_rect`, więc rzutowanie na offset 0 daje węzeł.
+type
+  WlrSceneRect* {.importc: "struct wlr_scene_rect", header: "wlr/types/wlr_scene.h", incompleteStruct.} = object
+
+proc wlrSceneRectCreate*(parent: ptr WlrSceneTree, width, height: cint, color: ptr cfloat): ptr WlrSceneRect {.importc: "wlr_scene_rect_create", header: "wlr/types/wlr_scene.h".}
+proc wlrSceneRectSetSize*(rect: ptr WlrSceneRect, width, height: cint) {.importc: "wlr_scene_rect_set_size", header: "wlr/types/wlr_scene.h".}
+proc rectNode*(r: ptr WlrSceneRect): ptr WlrSceneNode {.inline.} = cast[ptr WlrSceneNode](r)
 
 # ---------------------------------------------------------------------------
 # xdg-shell
@@ -496,6 +546,15 @@ type
     button* {.importc: "events.button".}: WlSignal
     axis* {.importc: "events.axis".}: WlSignal
     frame* {.importc: "events.frame".}: WlSignal
+    ## Rozbudowa v0.1 ("Aurora"/gesty) -- patrz `wlcomp/gestures.nim`.
+    ## `wlr_cursor` agreguje te same sygnały co touchpad/libinput
+    ## bezpośrednio (nagłówek mówi wprost: "Re-broadcasting these signals
+    ## ... is your responsibility" -- czyli te zdarzenia i tak trzeba
+    ## samemu przekazać dalej klientom przez `wlr_pointer_gestures_v1`,
+    ## jeśli mają być widoczne dla aplikacji -- patrz `hookGestures`).
+    swipeBegin* {.importc: "events.swipe_begin".}: WlSignal
+    swipeUpdate* {.importc: "events.swipe_update".}: WlSignal
+    swipeEnd* {.importc: "events.swipe_end".}: WlSignal
   WlrXcursorManager* {.importc: "struct wlr_xcursor_manager", header: "wlr/types/wlr_xcursor_manager.h", incompleteStruct.} = object
 
 proc wlrSeatCreate*(d: ptr WlDisplay, name: cstring): ptr WlrSeat {.importc: "wlr_seat_create", header: "wlr/types/wlr_seat.h".}
@@ -566,10 +625,180 @@ proc wlrCursorSetXcursor*(cur: ptr WlrCursor, mgr: ptr WlrXcursorManager, name: 
 # ---------------------------------------------------------------------------
 # XWayland
 # ---------------------------------------------------------------------------
+## Rozbudowa v0.1 ("Aurora"): do tej pory `zde-comp` uruchamiał proces
+## Xwayland (`wlrXwaylandCreate` poniżej, wołane w `main.nim`), ale NIGDY
+## nie nasłuchiwał na `events.new_surface` -- czyli żadne okno aplikacji
+## X11 (np. stare GTK2, Java Swing, gry przez Wine/Proton) nigdy nie
+## dostawało węzła w scenie ani nie trafiało na listę `toplevels`. Proces
+## Xwayland się uruchamiał, ale efektywnie nic nie robił. `wlcomp/xwayland.nim`
+## domyka tę lukę, podpinając powierzchnie X11 pod ten sam `Toplevel`, który
+## do tej pory obsługiwał tylko xdg-shell (patrz rozszerzone pola w
+## `types.nim` i uogólnione `surfaceOf`/`geometryOf` w `toplevel.nim`).
+##
+## ZWERYFIKOWANE KOMPILACJĄ (aktualizacja): w kolejnej sesji rozbudowy
+## udało się zainstalować `nim` + `libwlroots-dev` (0.17.1, Ubuntu 24.04)
+## w piaskownicy i realnie skompilować oraz uruchomić `zde-comp` z tym
+## kodem -- w tym postawić zagnieżdżony kompozytor pod Xvfb, uruchomić
+## pod nim prawdziwe okno X11 (`xclock` przez ten właśnie plik) i
+## zobaczyć w logu poprawną sekwencję `new_surface` -> `associate` ze
+## odczytanym tytułem okna. Każde pole/sygnał w tej sekcji, odtworzone
+## wcześniej "z pamięci", okazało się zgodne co do nazwy z prawdziwym
+## `wlr/xwayland/xwayland.h`. Jedyna poprawka, jakiej to wymagało: brakujący
+## `import std/sequtils` w `wlcomp/xwayland.nim` (Nim, nie C/wlroots).
+## Nie przetestowano jeszcze wobec wlroots 0.18/0.20 (tylko 0.17.1) ani
+## pełnego renderowania okna (headless Xvfb w piaskownicy nie ma
+## sprzętowego GL -- `associate` i `map` powinny nadal działać identycznie,
+## ale bez GPU nie dało się potwierdzić samego rysowania klatek).
 
 type
   WlrXwayland* {.importc: "struct wlr_xwayland", header: "wlr/xwayland/xwayland.h", incompleteStruct.} = object
+    ## Realny numer wyświetlacza X (np. ":2"), pod którym nasłuchuje ten
+    ## proces Xwayland -- zweryfikowane wobec prawdziwego nagłówka
+    ## (patrz duży komentarz "ZWERYFIKOWANE KOMPILACJĄ" niżej). Klienci X11
+    ## (i sam kompozytor przy logowaniu) potrzebują tego, żeby wiedzieć,
+    ## pod jakim `DISPLAY` się łączyć.
+    displayName* {.importc: "display_name".}: cstring
+
+  WlrXwaylandEvents* {.importc: "struct wlr_xwayland", header: "wlr/xwayland/xwayland.h", incompleteStruct.} = object
+    ready* {.importc: "events.ready".}: WlSignal
+    newSurface* {.importc: "events.new_surface".}: WlSignal
+
+  ## `wlr_xwayland_surface` -- odpowiednik `wlr_xdg_surface`, ale dla okna
+  ## X11. `surface` jest `nil`, dopóki nie odpali się `associate` (X11 samo
+  ## "kojarzy" swoje okno z powierzchnią Wayland dopiero po chwili, nie od
+  ## razu przy `new_surface`) -- stąd osobne zdarzenia `associate`/
+  ## `dissociate` obok zwykłego `map`/`unmap` na samej `surface` (patrz
+  ## `xwayland.nim`, `onXwaylandAssociate`).
+  WlrXwaylandSurface* {.importc: "struct wlr_xwayland_surface", header: "wlr/xwayland/xwayland.h", incompleteStruct.} = object
+    surface* {.importc: "surface".}: ptr WlrSurface
+    x* {.importc: "x".}: int16
+    y* {.importc: "y".}: int16
+    width* {.importc: "width".}: uint16
+    height* {.importc: "height".}: uint16
+    overrideRedirect* {.importc: "override_redirect".}: bool
+    title* {.importc: "title".}: cstring
+    class* {.importc: "class".}: cstring
+
+  WlrXwaylandSurfaceEvents* {.importc: "struct wlr_xwayland_surface", header: "wlr/xwayland/xwayland.h", incompleteStruct.} = object
+    destroy* {.importc: "events.destroy".}: WlSignal
+    requestConfigure* {.importc: "events.request_configure".}: WlSignal
+    requestMove* {.importc: "events.request_move".}: WlSignal
+    requestResize* {.importc: "events.request_resize".}: WlSignal
+    requestActivate* {.importc: "events.request_activate".}: WlSignal
+    requestMaximize* {.importc: "events.request_maximize".}: WlSignal
+    requestFullscreen* {.importc: "events.request_fullscreen".}: WlSignal
+    requestMinimize* {.importc: "events.request_minimize".}: WlSignal
+    associate* {.importc: "events.associate".}: WlSignal
+    dissociate* {.importc: "events.dissociate".}: WlSignal
+    setTitle* {.importc: "events.set_title".}: WlSignal
+    setClass* {.importc: "events.set_class".}: WlSignal
+
+  ## Dane niesione przez `request_configure` -- klient X11 prosi o
+  ## konkretną pozycję/rozmiar (np. okno dialogowe wyśrodkowujące się
+  ## względem rodzica). Honorujemy to wprost (patrz `xwayland.nim`) --
+  ## podobnie jak większość minimalnych kompozytorów wlroots (tinywl).
+  WlrXwaylandConfigureEvent* {.importc: "struct wlr_xwayland_surface_configure_event", header: "wlr/xwayland/xwayland.h", incompleteStruct.} = object
+    x* {.importc: "x".}: int16
+    y* {.importc: "y".}: int16
+    width* {.importc: "width".}: uint16
+    height* {.importc: "height".}: uint16
+
+proc xwaylandEvents*(xw: ptr WlrXwayland): ptr WlrXwaylandEvents {.inline.} = cast[ptr WlrXwaylandEvents](xw)
+proc xwaylandSurfaceEvents*(s: ptr WlrXwaylandSurface): ptr WlrXwaylandSurfaceEvents {.inline.} = cast[ptr WlrXwaylandSurfaceEvents](s)
 
 proc wlrXwaylandCreate*(d: ptr WlDisplay, compositor: ptr WlrCompositor, lazy: bool): ptr WlrXwayland {.importc: "wlr_xwayland_create", header: "wlr/xwayland/xwayland.h".}
 proc wlrXwaylandSetSeat*(xw: ptr WlrXwayland, seat: ptr WlrSeat) {.importc: "wlr_xwayland_set_seat", header: "wlr/xwayland/xwayland.h".}
 proc wlrXwaylandDestroy*(xw: ptr WlrXwayland) {.importc: "wlr_xwayland_destroy", header: "wlr/xwayland/xwayland.h".}
+proc wlrXwaylandSurfaceActivate*(s: ptr WlrXwaylandSurface, activated: bool) {.importc: "wlr_xwayland_surface_activate", header: "wlr/xwayland/xwayland.h".}
+proc wlrXwaylandSurfaceConfigure*(s: ptr WlrXwaylandSurface, x, y: int16, width, height: uint16) {.importc: "wlr_xwayland_surface_configure", header: "wlr/xwayland/xwayland.h".}
+proc wlrXwaylandSurfaceClose*(s: ptr WlrXwaylandSurface) {.importc: "wlr_xwayland_surface_close", header: "wlr/xwayland/xwayland.h".}
+## Generyczne dołączenie DOWOLNEJ `wlr_surface` (razem z jej ewentualnymi
+## subsurface'ami) pod drzewo sceny -- to samo, czego używają tinywl/sway
+## dla okien XWayland (xdg-shell ma swój dedykowany
+## `wlr_scene_xdg_surface_create` wyżej, X11 nie ma takiego odpowiednika,
+## bo `wlr_xwayland_surface` to nie jest "surface z rolą" w sensie
+## xdg-shell -- samą `surface` trzeba dołożyć do sceny osobno).
+proc wlrSceneSubsurfaceTreeCreate*(parent: ptr WlrSceneTree, surface: ptr WlrSurface): ptr WlrSceneTree {.importc: "wlr_scene_subsurface_tree_create", header: "wlr/types/wlr_scene.h".}
+
+# ---------------------------------------------------------------------------
+# Sesja / przełączanie VT (DRM)
+# ---------------------------------------------------------------------------
+## Rozbudowa v0.1 ("Aurora"/DRM): `WlrSession` (pole `active`) jest
+## zadeklarowane wyżej, w sekcji "Backend / renderer / allocator" (patrz
+## komentarz tam) -- tu tylko dostęp do jego `events.*` i same funkcje.
+## Patrz `wlcomp/session.nim` po pełny opis, DLACZEGO to jest potrzebne:
+## w skrócie, `zde_backend_autocreate` (shim.c) do tej pory NIGDY nie
+## oddawał kompozytorowi wskaźnika na `wlr_session`, więc przełączenie
+## wirtualnego terminala (Ctrl+Alt+F2 itd.) było niewidoczne dla
+## `zde-comp` -- backend DRM przestawał móc robić page-flipy, a
+## kompozytor nie miał jak się o tym dowiedzieć ani zareagować po
+## powrocie.
+
+type
+  WlrSessionEvents* {.importc: "struct wlr_session", header: "wlr/backend/session.h", incompleteStruct.} = object
+    active* {.importc: "events.active".}: WlSignal
+    destroy* {.importc: "events.destroy".}: WlSignal
+
+proc sessionEvents*(s: ptr WlrSession): ptr WlrSessionEvents {.inline.} = cast[ptr WlrSessionEvents](s)
+
+## `wlr_session_change_vt` -- prosi jądro (przez logind/seatd, w zależności
+## od tego, pod czym `zde-comp` akurat działa) o przełączenie na wskazany
+## wirtualny terminal. Zwraca `false`, gdy sesja nie istnieje (np.
+## zagnieżdżone uruchomienie pod X11/Wayland, gdzie VT w ogóle nie ma
+## zastosowania) -- kod wywołujący (`wlcomp/session.nim`) sprawdza to przez
+## `server.session != nil`, zanim w ogóle spróbuje.
+proc wlrSessionChangeVt*(s: ptr WlrSession, vt: cuint): bool {.importc: "wlr_session_change_vt", header: "wlr/backend/session.h".}
+
+# ---------------------------------------------------------------------------
+# Idle / DPMS
+# ---------------------------------------------------------------------------
+## Rozbudowa v0.1 ("Aurora"/DRM) -- patrz `wlcomp/idle.nim` po pełny opis.
+## `wlr_idle_notifier_v1` implementuje protokół `ext-idle-notify-v1` --
+## to jest niestabilne/eksperymentalne API wlroots, wymaga makra C
+## `WLR_USE_UNSTABLE` -- już globalnie włączonego przez
+## `{.passC: "-DWLR_USE_UNSTABLE".}` na górze tego pliku (reszta `wlcomp/`
+## używa też innych "unstable" typów wlroots, np. warstw sceny, więc ta
+## flaga i tak musiała być włączona wcześniej).
+type
+  WlrIdleNotifierV1* {.importc: "struct wlr_idle_notifier_v1", header: "wlr/types/wlr_idle_notify_v1.h", incompleteStruct.} = object
+
+proc wlrIdleNotifierV1Create*(display: ptr WlDisplay): ptr WlrIdleNotifierV1 {.importc: "wlr_idle_notifier_v1_create", header: "wlr/types/wlr_idle_notify_v1.h".}
+proc wlrIdleNotifierV1SetInhibited*(notifier: ptr WlrIdleNotifierV1, inhibited: bool) {.importc: "wlr_idle_notifier_v1_set_inhibited", header: "wlr/types/wlr_idle_notify_v1.h".}
+proc wlrIdleNotifierV1NotifyActivity*(notifier: ptr WlrIdleNotifierV1, seat: ptr WlrSeat) {.importc: "wlr_idle_notifier_v1_notify_activity", header: "wlr/types/wlr_idle_notify_v1.h".}
+
+# ---------------------------------------------------------------------------
+# Gesty touchpada (swipe)
+# ---------------------------------------------------------------------------
+## Rozbudowa v0.1 ("Aurora"/gesty). Patrz `wlcomp/gestures.nim` po pełny
+## opis. W skrócie: obsługujemy tylko SWIPE (przesunięcie kilkoma palcami),
+## nie pinch (zbliżanie/oddalanie) ani hold -- swipe 3-palcowy w lewo/prawo
+## przełącza aktywne okno (ten sam mechanizm co Alt+Tab, ale gestem).
+## Pinch/hold zostają świadomie poza zakresem (brak jeszcze naturalnego
+## zastosowania w ZDE -- np. pinch do zoomowania miałby sens w przeglądarce
+## plików czy przeglądarce obrazów, których ZDE jeszcze nie ma).
+type
+  WlrPointerSwipeBeginEvent* {.importc: "struct wlr_pointer_swipe_begin_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    fingers* {.importc: "fingers".}: uint32
+
+  WlrPointerSwipeUpdateEvent* {.importc: "struct wlr_pointer_swipe_update_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    fingers* {.importc: "fingers".}: uint32
+    dx* {.importc: "dx".}: cdouble
+    dy* {.importc: "dy".}: cdouble
+
+  WlrPointerSwipeEndEvent* {.importc: "struct wlr_pointer_swipe_end_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    cancelled* {.importc: "cancelled".}: bool
+
+  ## Globalny protokołu `pointer-gestures-unstable-v1` -- opcjonalny,
+  ## tylko po to, żeby KLIENCI (aplikacje), które same chcą surowych
+  ## gestów, też je dostały. Kompozytor działa (patrz punkt 2 w komentarzu
+  ## nad `WlrCursorEvents`) niezależnie od tego, czy jakikolwiek klient
+  ## używa tego protokołu -- ten sam wzorzec co `WlrIdleNotifierV1`.
+  WlrPointerGesturesV1* {.importc: "struct wlr_pointer_gestures_v1", header: "wlr/types/wlr_pointer_gestures_v1.h", incompleteStruct.} = object
+
+proc wlrPointerGesturesV1Create*(display: ptr WlDisplay): ptr WlrPointerGesturesV1 {.importc: "wlr_pointer_gestures_v1_create", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendSwipeBegin*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec, fingers: uint32) {.importc: "wlr_pointer_gestures_v1_send_swipe_begin", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendSwipeUpdate*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, dx, dy: cdouble) {.importc: "wlr_pointer_gestures_v1_send_swipe_update", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendSwipeEnd*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, cancelled: bool) {.importc: "wlr_pointer_gestures_v1_send_swipe_end", header: "wlr/types/wlr_pointer_gestures_v1.h".}
