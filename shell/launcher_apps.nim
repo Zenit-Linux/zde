@@ -22,28 +22,51 @@ proc launchTerminal*() =
     term.close(ts)
     terminals.keepItIf(it != ts)
 
+proc launchClock*() =
+  let cs = newClockState()
+  clocks.add(cs)  ## rejestr do odliczania alarmów/minutnika w tle, patrz state.nim
+  let win = compositor.openWindow(
+    "Zegar", wkGeneric,
+    size = vec2(320, 420),
+    drawBody = proc(w: ZdeWindow) = drawClock(cs, w),
+  )
+  win.onClose = proc(w: ZdeWindow) =
+    clocks.keepItIf(it != cs)
+
+proc launchTextEditor*(startPath = "") =
+  ## Rozbudowa (otwieranie plików z menedżera plików): parametr
+  ## `startPath` -- domyślnie pusty (dokładnie dawne zachowanie: pusta,
+  ## nowa zakładka), ale `launchFileManager` niżej podaje bezwzględną
+  ## ścieżkę przy podwójnym kliknięciu na pliku. `newEditorState`/`newTab`
+  ## (`apps/texteditor/texteditor.nim`) już wcześniej wspierały wczytanie
+  ## startowej ścieżki -- brakowało tylko przekazania jej AŻ TUTAJ z
+  ## menedżera plików.
+  let es = newEditorState(startPath)
+  texteditors.add(es)  ## rejestr do wykrywania zmian pliku na dysku w tle, patrz state.nim
+  let win = compositor.openWindow(
+    "Edytor tekstu", wkGeneric,
+    size = vec2(640, 460),
+    drawBody = proc(w: ZdeWindow) = drawEditor(es, w),
+  )
+  win.onClose = proc(w: ZdeWindow) =
+    texteditors.keepItIf(it != es)
+
 proc launchFileManager*() =
   let fs = newFileManager()
+  ## Rozbudowa (otwieranie plików z menedżera): `files.nim` celowo NIE
+  ## importuje tego modułu (uniknięcie cyklu -- to WŁAŚNIE ten moduł
+  ## importuje `files.nim`), więc podłączamy akcję "otwórz w edytorze"
+  ## tutaj, z zewnątrz, przez zwykłe domknięcie zapisane na stanie.
+  ## Musi być zdefiniowane PO `launchTextEditor` powyżej -- Nim (w
+  ## przeciwieństwie do C) NIE pozwala tu na odwołanie w przód do proc
+  ## zadeklarowanego niżej w tym samym module bez osobnej deklaracji
+  ## wyprzedzającej, więc kolejność tych dwóch procedur w pliku jest
+  ## istotna, nie przypadkowa.
+  fs.openFile = proc(path: string) = launchTextEditor(path)
   discard compositor.openWindow(
     "Menedżer plików", wkFileManager,
     size = vec2(620, 440),
     drawBody = proc(w: ZdeWindow) = drawFileManager(fs, w),
-  )
-
-proc launchClock*() =
-  let cs = newClockState()
-  discard compositor.openWindow(
-    "Zegar", wkGeneric,
-    size = vec2(320, 380),
-    drawBody = proc(w: ZdeWindow) = drawClock(cs, w),
-  )
-
-proc launchTextEditor*() =
-  let es = newEditorState()
-  discard compositor.openWindow(
-    "Edytor tekstu", wkGeneric,
-    size = vec2(640, 460),
-    drawBody = proc(w: ZdeWindow) = drawEditor(es, w),
   )
 
 proc launchCalculator*() =
