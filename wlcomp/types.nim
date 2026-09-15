@@ -27,7 +27,27 @@ type
     xcursorMgr*: ptr WlrXcursorManager
     seat*: ptr WlrSeat
     xwayland*: ptr WlrXwayland
-
+    ## Rozbudowa v0.1 ("Aurora"/DRM) -- `nil`, gdy `zde-comp` działa
+    ## zagnieżdżone pod X11/Wayland (nie ma czego przełączać); realny
+    ## uchwyt sesji logind/seatd, gdy działa na prawdziwym DRM/TTY. Patrz
+    ## `wlcomp/session.nim`.
+    session*: ptr WlrSession
+    sessionActiveL*: WlListener
+    ## Rozbudowa v0.1 ("Aurora"/DPMS) -- patrz `wlcomp/idle.nim`.
+    idleNotifier*: ptr WlrIdleNotifierV1
+    lastInputActivity*: float   ## epochTime() ostatniego ruchu myszy/klawisza
+    outputsBlanked*: bool       ## czy wyjścia są aktualnie wygaszone (DPMS off)
+    dpmsTimerSource*: ptr WlEventSource
+    ## Rozbudowa v0.1 ("Aurora"): karuzela Alt+Tab -- patrz `cycleAltTab`/
+    ## `commitAltTab` w `wlcomp/toplevel.nim`.
+    altTabActive*: bool
+    altTabIndex*: int              ## indeks w `toplevels` aktualnie podświetlonego okna
+    altTabHighlight*: ptr WlrSceneRect  ## ramka podświetlenia w `overlayTree`, nil gdy nieaktywna
+    ## Rozbudowa v0.1 ("Aurora"/gesty) -- patrz `wlcomp/gestures.nim`.
+    pointerGestures*: ptr WlrPointerGesturesV1
+    swipeBeginL*, swipeUpdateL*, swipeEndL*: WlListener
+    gestureFingers*: uint32     ## liczba palców bieżącego gestu (0 = żaden aktywny)
+    gestureAccumDx*: float      ## suma przesunięcia w poziomie od swipe_begin
     ## Cztery stałe pod-drzewa sceny, utworzone RAZ przy starcie, w tej
     ## kolejności (wlroots domyślnie stackuje węzły w kolejności DODANIA --
     ## później dodany = wyżej -- stąd kolejność poniższych pól ma
@@ -55,6 +75,8 @@ type
     newOutputL*: WlListener
     newXdgSurfaceL*: WlListener
     newLayerSurfaceL*: WlListener
+    ## Rozbudowa v0.1 ("Aurora"/XWayland) -- patrz `wlcomp/xwayland.nim`.
+    newXwaylandSurfaceL*: WlListener
     newInputL*: WlListener
     requestSetSelectionL*: WlListener
     requestStartDragL*: WlListener
@@ -73,11 +95,35 @@ type
 
   ToplevelObj* = object
     server*: Server
+    ## Dokładnie JEDNO z poniższych dwóch jest nie-`nil` dla danego
+    ## `Toplevel` -- `xdgSurface` dla zwykłych okien Wayland (xdg-shell),
+    ## `xwaylandSurface` dla okien X11 uruchomionych przez Xwayland
+    ## (rozbudowa v0.1, patrz `wlcomp/xwayland.nim`). Zamiast osobnego typu
+    ## `XwaylandToplevel` cała reszta kompozytora (hit-testing w
+    ## `toplevelAt`, fokus, przeciąganie/resize w `input.nim`) korzysta z
+    ## JEDNEGO uogólnionego typu przez `surfaceOf`/`geometryOf`
+    ## (`toplevel.nim`) -- dzięki temu okno X11 "po prostu działa" wszędzie
+    ## tam, gdzie do tej pory działały tylko okna xdg-shell, bez
+    ## duplikowania całej logiki fokusu/przeciągania/hit-testu.
     xdgSurface*: ptr WlrXdgSurface
+    xwaylandSurface*: ptr WlrXwaylandSurface
     sceneTree*: ptr WlrSceneTree
     mapL*, unmapL*, destroyL*: WlListener
     requestMoveL*, requestResizeL*: WlListener
     newPopupL*: WlListener
+    ## Tylko dla `xwaylandSurface != nil` -- patrz komentarz przy typie
+    ## `WlrXwaylandSurface` w `wlroots.nim` o tym, dlaczego X11 potrzebuje
+    ## dodatkowych `associate`/`dissociate` obok zwykłego `map`/`unmap`.
+    associateL*, dissociateL*, requestConfigureL*: WlListener
+    ## `true` dokładnie wtedy, gdy `mapL`/`unmapL` są AKTUALNIE podłączone
+    ## (między `associate` a `dissociate`/`destroy`) -- w odróżnieniu od
+    ## xdg-shell, gdzie te dwa listenery są podłączane RAZ i zawsze
+    ## bezpiecznie odpinalne, dla X11 mogą nigdy nie zostać podłączone
+    ## (okno zniszczone zanim serwer X zdążył je skojarzyć z powierzchnią)
+    ## -- bez tej flagi `onXwaylandSurfaceDestroy` mogłoby wywołać
+    ## `wl_list_remove` na nigdy-niezainicjalizowanym listenerze (realny
+    ## crash, patrz komentarz w `wlcomp/xwayland.nim`).
+    xwaylandAssociated*: bool
   Toplevel* = ref ToplevelObj
 
   ## Nazwa `LayerSurfaceZde` (nie `LayerSurface`) celowo, żeby nie kolidować
