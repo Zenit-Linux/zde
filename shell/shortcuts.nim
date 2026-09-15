@@ -13,6 +13,14 @@ type
     actCloseWindow
     actLockScreen
     actLogout
+    ## Rozbudowa v0.1 ("Aurora"): przyciąganie okna do połowy ekranu.
+    actSnapLeft
+    actSnapRight
+    ## Rozbudowa v0.1 ("Aurora" -- pulpity wirtualne).
+    actWorkspaceNext
+    actWorkspacePrev
+    actMoveWindowNext
+    actMoveWindowPrev
 
   ParsedShortcut* = object
     ctrl*, alt*, shift*, super*: bool
@@ -22,15 +30,22 @@ const
   ActionNames*: array[ShortcutAction, string] = [
     "toggleLauncher", "cycleFocus", "openTerminal", "openFileManager",
     "openEditor", "openSettings", "closeWindow", "lockScreen", "logout",
+    "snapLeft", "snapRight", "workspaceNext", "workspacePrev",
+    "moveWindowNext", "moveWindowPrev",
   ]
   ActionLabels*: array[ShortcutAction, string] = [
     "Otwórz/zamknij launcher", "Przełącz między oknami", "Otwórz terminal",
     "Otwórz menedżer plików", "Otwórz edytor tekstu", "Otwórz ustawienia",
     "Zamknij aktywne okno", "Zablokuj ekran", "Wyloguj",
+    "Przyciągnij okno do lewej połowy", "Przyciągnij okno do prawej połowy",
+    "Następny pulpit", "Poprzedni pulpit",
+    "Przenieś okno na następny pulpit", "Przenieś okno na poprzedni pulpit",
   ]
   DefaultCombos*: array[ShortcutAction, string] = [
     "super+space", "alt+tab", "ctrl+alt+t", "ctrl+alt+e", "ctrl+alt+n",
     "ctrl+alt+s", "ctrl+alt+q", "ctrl+alt+l", "ctrl+alt+shift+q",
+    "super+left", "super+right", "ctrl+alt+right", "ctrl+alt+left",
+    "ctrl+alt+shift+right", "ctrl+alt+shift+left",
   ]
 
   NamedKeys = {
