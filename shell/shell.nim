@@ -10,6 +10,8 @@ import chrome
 import taskbar
 import launcher_apps
 import shortcuts
+import notifications
+import clipboard
 
 proc dispatchShortcut(a: ShortcutAction) =
   case a
@@ -24,6 +26,24 @@ proc dispatchShortcut(a: ShortcutAction) =
     if w != nil: compositor.closeWindow(w.id)
   of actLockScreen: lockScreen()
   of actLogout: logout()
+  of actSnapLeft:
+    let w = compositor.focusedWindow()
+    if w != nil: compositor.snapWindow(w.id, seLeft)
+  of actSnapRight:
+    let w = compositor.focusedWindow()
+    if w != nil: compositor.snapWindow(w.id, seRight)
+  of actWorkspaceNext:
+    ## Zawija się (4 -> 1), nie zatrzymuje na krawędzi -- ten sam
+    ## mechanizm co karuzela Alt+Tab okien w `wlcomp/toplevel.nim`.
+    compositor.switchWorkspace((compositor.currentWorkspace + 1) mod WorkspaceCount)
+  of actWorkspacePrev:
+    compositor.switchWorkspace((compositor.currentWorkspace - 1 + WorkspaceCount) mod WorkspaceCount)
+  of actMoveWindowNext:
+    let w = compositor.focusedWindow()
+    if w != nil: compositor.moveWindowToWorkspace(w.id, (w.workspace + 1) mod WorkspaceCount)
+  of actMoveWindowPrev:
+    let w = compositor.focusedWindow()
+    if w != nil: compositor.moveWindowToWorkspace(w.id, (w.workspace - 1 + WorkspaceCount) mod WorkspaceCount)
 
 proc drawMain() =
   compositor.setScreenSize(vec2(windowSize.x, windowSize.y))
@@ -39,6 +59,13 @@ proc drawMain() =
   ## `return` (w ogóle nie deklarujemy tamtych elementów tej klatki)
   ## całkowicie i niezawodnie to załatwia.
   drawLockOverlay(lockState, clockText)
+
+  ## Powiadomienia (rozbudowa v0.1, patrz `notifications.nim`) rysujemy
+  ## PRZED wczesnym `return` ekranu blokady, celowo -- alarm zegara ma
+  ## poinformować użytkownika, nawet gdy ekran jest zablokowany, tak jak w
+  ## każdym telefonie/DE. Same okna aplikacji i pasek zadań zostają
+  ## ukryte pod blokadą (return niżej), toasty -- nie.
+  drawNotifications()
   if lockState.locked: return
 
   ## UWAGA O KOLEJNOŚCI RYSOWANIA (naprawiony bug -- ekran był pusty poza
@@ -53,7 +80,7 @@ proc drawMain() =
   ## Stąd kolejność wywołań poniżej musi iść od "wizualnie najwyższej"
   ## warstwy do "wizualnie najniższej" (odwrotnie niż mogłoby się
   ## intuicyjnie wydawać):
-  ##   1. launcher (menu, gdy otwarte)         -- najwyżej
+  ##   1. launcher / centrum powiadomień (gdy otwarte)  -- najwyżej
   ##   2. pasek zadań
   ##   3. okna aplikacji, od najwyższego z-index do najniższego
   ##   4. tło pulpitu                           -- najniżej
@@ -64,6 +91,12 @@ proc drawMain() =
 
   if compositor.launcherOpen:
     drawLauncher()
+  if compositor.notifCenterOpen:
+    drawNotificationCenter()
+  if compositor.quickSettingsOpen:
+    drawQuickSettings()
+  if compositor.clipboardHistoryOpen:
+    drawClipboardHistory()
 
   drawTaskbar()
 
@@ -83,6 +116,11 @@ proc drawMain() =
     compositor.updateDrag(mouse.pos)
     if not mouse.down:
       compositor.endDrag()
+
+  # -- globalna obsługa przeciągania suwaków quick settings (rozbudowa) --
+  # ten sam wzorzec co przeciąganie okien wyżej -- patrz `SliderDragState`
+  # w `shell/taskbar.nim`.
+  updateSliderDrag()
 
   # -- Skróty klawiszowe (konfigurowalne, patrz shortcuts.nim + Ustawienia) -
   # Escape zamykający launcher zostaje zaszyty na sztywno -- to zachowanie
@@ -106,6 +144,24 @@ proc tickMain() =
     # Monitor systemu -- odczyt /proc raz na sekundę w zupełności wystarczy.
     for sm in sysmonitors:
       poll(sm)
+    # Alarmy i minutniki (rozbudowa v0.1) -- też wystarczy raz na sekundę,
+    # patrz komentarz przy `tickClock` w `apps/clock/clockapp.nim`.
+    for cs in clocks:
+      tickClock(cs)
+    # Wykrywanie zmian pliku na dysku (rozbudowa v0.1) -- też wystarczy raz
+    # na sekundę, patrz komentarz przy `checkExternalChanges` w
+    # `apps/texteditor/texteditor.nim`.
+    for es in texteditors:
+      checkExternalChanges(es)
+    # Sprzątanie wygasłych toastów -- patrz `notifications.nim`.
+    tickNotifications()
+    # Żywe wykrywanie nowo zainstalowanych/usuniętych aplikacji systemowych
+    # w launcherze (rozbudowa) -- patrz `rescanSystemAppsIfChanged` w
+    # `shell/taskbar.nim` i `appDirsSignature` w `shell/desktopapps.nim`.
+    rescanSystemAppsIfChanged()
+    # Historia schowka (rozbudowa) -- odpytanie systemowego schowka raz na
+    # sekundę, patrz duży komentarz na górze `shell/clipboard.nim`.
+    tickClipboard()
 
 ## Znajduje ścieżkę do prawdziwego pliku fontu na dysku dla podanej
 ## logicznej rodziny (np. "sans-serif", "monospace"). `fidget.loadFont`
@@ -153,6 +209,17 @@ proc loadSystemFont(logicalName, family: string) =
 when isMainModule:
   loadSystemFont("sans-serif", "sans-serif")
   loadSystemFont("monospace", "monospace")
+  ## Rozbudowa v0.1 ("Aurora" -- prawdziwe aplikacje systemowe): Fidget
+  ## ładuje obrazy (`image(...)` w DSL-u, patrz `shell/taskbar.nim`,
+  ## `drawLauncherRow`) spod `dataDir / imageName`, domyślnie
+  ## `dataDir = "data"` (katalog względny do CWD procesu). Ikony aplikacji
+  ## systemowych (`shell/desktopapps.nim`) to zawsze ścieżki BEZWZGLĘDNE
+  ## (`/usr/share/icons/...`) -- ustawiamy `dataDir = "/"` i w
+  ## `drawLauncherRow` przekazujemy taką ścieżkę BEZ wiodącego "/", żeby
+  ## złożenie dawało z powrotem poprawną ścieżkę bezwzględną, niezależnie
+  ## od tego, jak dokładnie ten konkretny `/` (`os.joinPath`) traktuje
+  ## już-bezwzględny drugi argument.
+  dataDir = "/"
   setTitle("Zenit Desktop Environment")
   startFidget(
     drawMain,
