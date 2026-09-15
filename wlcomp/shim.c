@@ -1,5 +1,6 @@
 #include "shim.h"
 #include <wlr/backend.h>
+#include <wlr/backend/session.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/allocator.h>
 #include <wlr/types/wlr_compositor.h>
@@ -87,12 +88,13 @@ struct wlr_output_layout *zde_output_layout_create(struct wl_display *display) {
  * spod złego wskaźnika i segfaultuje. Właśnie to zostało złapane przy
  * pierwszym realnym uruchomieniu zde-comp (wlroots X11 backend zagnieżdżony
  * pod Xvfb) -- weryfikacja samą kompilacją tego nie wykrywa.  */
-struct wlr_backend *zde_backend_autocreate(struct wl_display *display) {
+struct wlr_backend *zde_backend_autocreate(struct wl_display *display,
+                                            struct wlr_session **session_out) {
 #if WLR_VERSION_MINOR >= 18
   struct wl_event_loop *loop = wl_display_get_event_loop(display);
-  return wlr_backend_autocreate(loop, NULL);
+  return wlr_backend_autocreate(loop, session_out);
 #else
-  return wlr_backend_autocreate(display, NULL);
+  return wlr_backend_autocreate(display, session_out);
 #endif
 }
 
