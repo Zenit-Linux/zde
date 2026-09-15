@@ -4,6 +4,7 @@ import ../../comp/comp
 import ../../zdeconfig
 import ../../shell/state as zde_state
 import ../../shell/shortcuts
+import ../../shell/wallpaper
 
 type
   SettingsSection = enum
@@ -29,10 +30,18 @@ type
                          ## NIE wolno przeliczać jej na nowo w trakcie przeciągania
     shortcuts: ShortcutMap
     recordingAction: int  ## indeks ShortcutAction właśnie nagrywanego, -1 = brak
+    ## Rozbudowa (tapeta z pliku): bufor pola tekstowego ze ścieżką do
+    ## obrazu -- ten sam wzorzec "bufor + osobny przycisk zatwierdzenia"
+    ## co pole nazwy nowego folderu w `apps/filemanager/files.nim`
+    ## (`newFolderName`) -- NIE stosujemy tapety na każde naciśnięcie
+    ## klawisza, tylko po kliknięciu "Zastosuj", żeby nie próbować
+    ## dekodować obrazu z niedokończonej, częściowo wpisanej ścieżki.
+    wallpaperPathInput: string
 
 proc newSettingsState*(): SettingsState =
   result = SettingsState(cfg: loadConfig(), section: secAppearance, draggingMonitor: -1,
                           recordingAction: -1, shortcuts: activeShortcuts)
+  result.wallpaperPathInput = result.cfg.wallpaperPath
   if result.cfg.monitors.len == 0:
     ## Brak configu -- podpowiedz jeden wpis odzwierciedlający aktualny,
     ## jedyny wirtualny ekran tej kompilacji GLFW/X11, żeby lista nie była
@@ -54,6 +63,16 @@ proc applyAccentColorLive(hex: string) =
   ## komentarz w shell/state.nim) -- pasek zadań, ramki aktywnych okien i
   ## launcher przefarbowują się natychmiast, bez restartu.
   zde_state.AccentColor = hex
+
+proc applyWallpaperLive(path: string) =
+  ## Ten sam wzorzec co `applyAccentColorLive` wyżej -- mutuje
+  ## `state.WallpaperPath` (`var`), które `shell/wallpaper.nim`
+  ## (`drawWallpaper`) odczytuje co klatkę. Samo przetworzenie obrazu
+  ## (skalowanie/przycięcie "cover", zapis do cache) dzieje się LENIWIE,
+  ## dopiero przy pierwszym rysowaniu tapety z tą ścieżką (patrz
+  ## `ensureWallpaperCache` tam) -- tutaj tylko przełączamy, CO ma być
+  ## narysowane, nie robimy samego przetwarzania.
+  zde_state.WallpaperPath = path
 
 proc pidFilePath(): string =
   let rt = getEnv("XDG_RUNTIME_DIR", "")
@@ -129,6 +148,121 @@ proc drawAppearance(ss: SettingsState, x, y, w: float32) =
     font "sans-serif", 11, 400, 16, hLeft, vTop
     fill "#8a94a3"
     characters "Zmiana widoczna od razu w pasku zadań i ramkach okien. Zapisywana automatycznie."
+
+  ## Rozbudowa (tapeta z pliku): druga sekcja "Wyglądu", pod kolorem
+  ## akcentu -- pole tekstowe ze ścieżką do obrazu (Fidget nie ma
+  ## natywnego okna wyboru pliku, więc jak wszędzie indziej w ZDE --
+  ## zwykłe pole tekstowe, ten sam wzorzec co ścieżka w
+  ## `apps/texteditor/texteditor.nim`) plus "Zastosuj"/"Przywróć
+  ## domyślną".
+  let wpY = cy + 100
+  text "wallpaper-title":
+    box x, wpY, w, 24
+    font "sans-serif", 14, 700, 24, hLeft, vCenter
+    fill "#e8ecf0"
+    characters "Tapeta"
+
+  text "wallpaper-input":
+    box x, wpY + 34, w - 180, 30
+    font "sans-serif", 12, 400, 30, hLeft, vCenter
+    fill "#e8ecf0"
+    editableText true
+    selectable true
+    if not current.hasKeyboardFocus() and ss.wallpaperPathInput.len == 0:
+      characters "/ścieżka/do/obrazu.png albo .jpg"
+    else:
+      characters ss.wallpaperPathInput
+    onClick:
+      keyboard.focus(current)
+    onInput:
+      ss.wallpaperPathInput = keyboard.input
+
+  group "wallpaper-apply-btn":
+    box x + w - 172, wpY + 34, 82, 30
+    cornerRadius 4
+    fill "#2d8a5f"
+    onHover: fill "#37a373"
+    onClick:
+      let path = ss.wallpaperPathInput.strip()
+      if path.len > 0 and (fileExists(path)):
+        applyWallpaperLive(path)
+        ss.cfg.wallpaperPath = path
+        save(ss)
+        ss.statusMsg = "Ustawiono tapetę: " & path
+      elif path.len > 0:
+        ss.statusMsg = "Nie znaleziono pliku: " & path
+    text "wallpaper-apply-label":
+      box 0, 0, 82, 30
+      font "sans-serif", 11, 700, 30, hCenter, vCenter
+      fill "#ffffff"
+      characters "Zastosuj"
+
+  group "wallpaper-reset-btn":
+    box x + w - 86, wpY + 34, 86, 30
+    cornerRadius 4
+    fill "#2a2f36"
+    onHover: fill "#3a4048"
+    onClick:
+      ss.wallpaperPathInput = ""
+      applyWallpaperLive("")
+      ss.cfg.wallpaperPath = ""
+      save(ss)
+      ss.statusMsg = "Przywrócono domyślną tapetę"
+    text "wallpaper-reset-label":
+      box 0, 0, 86, 30
+      font "sans-serif", 11, 600, 30, hCenter, vCenter
+      fill "#c7ccd3"
+      characters "Domyślna"
+
+  ## Rozbudowa (podgląd miniatury): pokazuje, jak będzie wyglądać tapeta
+  ## PRZED kliknięciem "Zastosuj" -- wypełnia dokładnie tę samą lukę,
+  ## którą poprzednia rozbudowa jawnie zostawiła otwartą na liście
+  ## ograniczeń ("bez podglądu miniatury przed zastosowaniem"). Woła
+  ## `ensureWallpaperCache` (wyeksportowane z `shell/wallpaper.nim`
+  ## właśnie w tym celu) z małym rozmiarem 160x90 -- ta sama funkcja,
+  ## ten sam algorytm "cover", te same zabezpieczenia przed uszkodzonymi
+  ## plikami, co dla właściwej tapety, zero duplikacji logiki.
+  let previewPath = ss.wallpaperPathInput.strip()
+  const previewW = 160.0'f32
+  const previewH = 90.0'f32
+  let previewY = wpY + 34 + 38
+  if previewPath.len > 0 and fileExists(previewPath):
+    let thumbPath = ensureWallpaperCache(previewPath, int(previewW), int(previewH))
+    if thumbPath.len > 0 and fileExists(thumbPath):
+      rectangle "wallpaper-preview":
+        box x, previewY, previewW, previewH
+        cornerRadius 4
+        image thumbPath[1 .. ^1]
+    else:
+      ## Ścieżka istnieje jako plik, ale Pixie nie potrafiła go
+      ## zdekodować (zły format/uszkodzony) -- ten sam sygnał, jaki i tak
+      ## dostałby użytkownik po kliknięciu "Zastosuj", tylko wcześniej.
+      rectangle "wallpaper-preview-error":
+        box x, previewY, previewW, previewH
+        cornerRadius 4
+        fill "#3a2323"
+        text "wallpaper-preview-error-label":
+          box 8, 0, previewW - 16, previewH
+          font "sans-serif", 10, 400, 16, hCenter, vCenter
+          fill "#e08a8a"
+          characters "Nie można odczytać obrazu"
+  else:
+    rectangle "wallpaper-preview-empty":
+      box x, previewY, previewW, previewH
+      cornerRadius 4
+      fill "#1b2027"
+      text "wallpaper-preview-empty-label":
+        box 8, 0, previewW - 16, previewH
+        font "sans-serif", 10, 400, 16, hCenter, vCenter
+        fill "#5b6470"
+        characters "Podgląd"
+
+  text "wallpaper-note":
+    box x + previewW + 16, previewY, w - previewW - 16, previewH
+    font "sans-serif", 11, 400, 16, hLeft, vTop
+    fill "#8a94a3"
+    characters "Obraz zostanie dopasowany do rozdzielczości ekranu (przycięty, " &
+      "bez zniekształcenia proporcji). Obsługiwane formaty jak w Pixie -- PNG i JPEG."
 
 const
   SnapPx = 24  ## próg przyciągania krawędzi (w jednostkach WIRTUALNEGO
