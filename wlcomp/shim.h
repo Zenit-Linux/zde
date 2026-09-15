@@ -8,6 +8,7 @@ struct wlr_xdg_surface;
 struct wlr_box;
 struct wlr_backend;
 struct wlr_seat;
+struct wlr_session;
 
 void zde_wl_list_init(struct wl_list *list);
 void zde_wl_list_remove(struct wl_list *elm);
@@ -37,8 +38,20 @@ struct wlr_output_layout *zde_output_layout_create(struct wl_display *display);
  * 0.17 (bierze wl_display*) i 0.18+ (bierze wl_event_loop*). Znaleziony
  * przez realne uruchomienie zde-comp pod zagnieżdżonym backendem X11
  * (Xvfb), nie przez samą kompilację -- błędny typ wskaźnika przez granicę
- * importc nie jest wykrywalny statycznie. */
-struct wlr_backend *zde_backend_autocreate(struct wl_display *display);
+ * importc nie jest wykrywalny statycznie.
+ *
+ * Rozbudowa v0.1 ("Aurora"/DRM): dodany `session_out` -- `wlr_backend_
+ * autocreate()` w obu wersjach przyjmuje opcjonalny `struct wlr_session
+ * **`, przez który wlroots ODDAJE kompozytorowi uchwyt do sesji logind/
+ * seatd, KIEDY backend faktycznie jej używa (czyli gdy `zde-comp` startuje
+ * z prawdziwego TTY przez DRM+libinput -- nie przy zagnieżdżeniu pod
+ * X11/Wayland, gdzie sesja jest `NULL`, i to jest poprawne, nie błąd).
+ * Wcześniej ten parametr był na sztywno `NULL` w shim.c, więc kompozytor
+ * nie miał JAK dowiedzieć się o przełączeniu wirtualnego terminala (VT) --
+ * `session->events.active` nigdy nie było nasłuchiwane, bo nie było czego
+ * nasłuchiwać. Patrz `wlcomp/session.nim`. */
+struct wlr_backend *zde_backend_autocreate(struct wl_display *display,
+                                            struct wlr_session **session_out);
 
 /* Patrz komentarz w shim.c -- ujednolica `wlr_seat_pointer_notify_axis()`
  * między wlroots <0.18 (6 argumentów) i >=0.18 (7 argumentów, dodatkowy
