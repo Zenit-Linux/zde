@@ -419,6 +419,162 @@
         (set found true))))
   found)
 
+(defn fidget-base-nim-candidates []
+  "Zwraca ścieżki, pod którymi `fidget/opengl/base.nim` MOŻE leżeć w
+   zainstalowanej paczce nimble `fidget` -- tak jak przy niespójności
+   `src/` obsługiwanej w `config.nims`, nie wszystkie wersje/kopie paczki
+   trzymają pliki w `src/`."
+  (def out @[])
+  (each pkgs-dir (nimble-pkgs-dirs)
+    (each entry (os/dir pkgs-dir)
+      (when (string/has-prefix? "fidget-" entry)
+        (def root (string pkgs-dir "/" entry))
+        (array/push out (string root "/src/fidget/opengl/base.nim"))
+        (array/push out (string root "/fidget/opengl/base.nim")))))
+  out)
+
+(def fidget-callback-awk-script
+  `
+  # Skrypt patcha dla patch-fidget-glfw-callbacks (build.janet) -- patrz
+  # duży komentarz przy tej funkcji PO CO. Dla KAŻDEJ linii deklaracji
+  # procedury callbacku GLFW w fidget/opengl/base.nim postaci
+  # 'proc on<Cokolwiek>(...) {.cdecl.} = ...' zamienia w LIŚCIE
+  # PARAMETRÓW tej linii nim-natywne typy na dokładnie te, których
+  # oczekują odpowiadające im aliasy proc w staticglfw (int32 -> cint,
+  # float64 -> cdouble, uint32 -> cuint), i ZARAZ PO tej linii wstawia,
+  # dla KAŻDEGO przetypowanego parametru, przesłaniające
+  # 'let <nazwa> = <nazwa>.<oryginalny typ>' -- reszta ciała procedury
+  # (nieznana temu skryptowi -- to kod paczki, nie ZDE) dalej widzi
+  # dokładnie takie typy, jakich się spodziewa. Parametry NIENALEŻące do
+  # jednej z tych trzech "znanych" niespójności (np. Window) przechodzą
+  # bez zmian. Celowo działa TYLKO na liniach deklaracji 'proc on...',
+  # nigdzie indziej w pliku (np. w niepowiązanym 'proc foo(x: int32)')
+  # -- więc nie rusza niczego poza rejestrowanymi callbackami GLFW.
+  # Idempotentne: uruchomiony na już załatanej linii nie znajduje już
+  # int32/float64/uint32 w jej parametrach, więc nic nie zmienia i
+  # nie dokłada duplikatów 'let'.
+  {
+    line = $0
+    if (line ~ /^proc on[A-Za-z0-9_]+\(.*\{\.cdecl\.\}.*=/) {
+      if (match(line, /\([^()]*\)[ \t]*\{\.cdecl\.\}/)) {
+        full = substr(line, RSTART, RLENGTH)
+        popen = index(full, "(")
+        pclose = index(full, ")")
+        params = substr(full, popen + 1, pclose - popen - 1)
+        gsub(/;/, ",", params)
+        n = split(params, plist, ",")
+        newparams = ""
+        shadow = ""
+        for (i = 1; i <= n; i++) {
+          p = plist[i]
+          gsub(/^[ \t]+/, "", p)
+          gsub(/[ \t]+$/, "", p)
+          colon = index(p, ":")
+          if (colon == 0) {
+            if (i > 1) newparams = newparams ", "
+            newparams = newparams p
+            continue
+          }
+          pname = substr(p, 1, colon - 1)
+          gsub(/[ \t]+$/, "", pname)
+          ptype = substr(p, colon + 1)
+          gsub(/^[ \t]+/, "", ptype)
+          newtype = ptype
+          if (ptype == "int32") newtype = "cint"
+          else if (ptype == "float64") newtype = "cdouble"
+          else if (ptype == "uint32") newtype = "cuint"
+          if (newtype != ptype) shadow = shadow "  let " pname " = " pname "." ptype "\n"
+          if (i > 1) newparams = newparams ", "
+          newparams = newparams pname ": " newtype
+        }
+        newfull = "(" newparams ")" substr(full, pclose + 1)
+        newline = substr(line, 1, RSTART - 1) newfull substr(line, RSTART + RLENGTH)
+        print newline
+        printf "%s", shadow
+        next
+      }
+    }
+    print line
+  }
+  `)
+
+(defn patch-fidget-glfw-callbacks []
+  "Znana niespójność paczki 'fidget' (>= 0.7.10): `fidget/opengl/base.nim`
+   rejestruje SWOJE callbacki GLFW (`onResize`, `onScroll`, `onKey`, ...,
+   przekazywane do odpowiednich `staticglfw.set*Callback`) z parametrami
+   typu nim-natywnego (`int32`, `float64`, ...), np.:
+
+     proc onResize(handle: Window, w: int32, h: int32) {.cdecl.} = ...
+     proc onScroll(window: Window, xoffset: float64, yoffset: float64){.cdecl.} = ...
+
+   ...podczas gdy odpowiadające im aliasy proc w staticglfw (np.
+   `FrameBufferSizeFun`, `ScrollFun`) są zadeklarowane z DOKŁADNYMI
+   typami C:
+
+     FrameBufferSizeFun* = proc (window: Window, width: cint, height: cint) {.cdecl.}
+     ScrollFun* = proc (window: Window, xoffset: cdouble, yoffset: cdouble) {.cdecl.}
+
+   Na tyle świeżych Nimach/staticglfw te pary typów (`cint`/`int32`,
+   `cdouble`/`float64`) nie są już dla kompilatora automatycznie
+   zamienne przy dopasowywaniu sygnatury proc (to nazwane typy, mimo tej
+   samej reprezentacji na większości platform) -- efekt to `Error: type
+   mismatch` przy KOLEJNYM `set*Callback(window, on...)`, głęboko w
+   SAMEJ paczce fidget, nie w kodzie ZDE. Pierwsza wersja tej łatki
+   naprawiała tylko `onResize` -- okazało się (patrz zgłoszony log
+   budowania), że dokładnie ta sama niespójność powtarza się w KOLEJNYCH
+   callbackach (`onScroll` i pewnie dalszych: `onKey`, `onMouseButton`,
+   `onCursorPos`, `onChar`, ...), więc zamiast łatać je pojedynczo, po
+   jednym błędzie kompilacji na raz, ta wersja przechodzi CAŁY plik i
+   naprawia WSZYSTKIE takie deklaracje `proc on...(...) {.cdecl.}` naraz
+   (patrz `fidget-callback-awk-script` po szczegóły mechanizmu).
+
+   Łatamy to tym samym stylem 'wykryj i napraw znaną niespójność', co
+   `config.nims` już robi dla ścieżek `--path` (patrz duży komentarz na
+   górze tamtego pliku) -- bezpośrednio w zainstalowanej kopii paczki w
+   `~/.nimble`, PO każdym `ensure-nimble-deps` (a więc też po świeżym
+   `nimble install fidget` na nowej maszynie, nie tylko raz na tej, na
+   której to naprawiono).
+
+   Idempotentne (uruchomienie na już załatanym pliku nic nie zmienia --
+   porównujemy zawartość przed/po i nadpisujemy plik TYLKO gdy faktycznie
+   coś się różni) i best-effort: jeśli `awk` z jakiegoś powodu zawiedzie,
+   logujemy ostrzeżenie i NIE przerywamy builda -- to łatka na znaną
+   niespójność ZALEŻNOŚCI, nie coś, czego brak ma prawo zablokować
+   budowanie ZDE."
+  (def awk-path (string "/tmp/.zde-build-janet-fidget-callback-patch-" (os/getpid) ".awk"))
+  (spit awk-path fidget-callback-awk-script)
+  (each base-nim (fidget-base-nim-candidates)
+    (when (os/stat base-nim)
+      (def before (try (slurp base-nim) ([_] nil)))
+      (def tmp-out (string base-nim ".zde-patch-tmp"))
+      (def ok (and (not (nil? before))
+                   (= 0 (os/execute ["sh" "-c"
+                                      (string "awk -f '" awk-path "' '" base-nim "' > '" tmp-out "'")]
+                                     :p))))
+      (if ok
+        (do
+          (def after (try (slurp tmp-out) ([_] nil)))
+          (cond
+            (nil? after)
+            (log "uwaga: nie udało się odczytać wyniku auto-łatki fidget/GLFW dla "
+                 base-nim " -- pomijam.")
+
+            (= before after)
+            nil  # już załatane (albo ta wersja fidget nie ma tej niespójności) -- nic do zrobienia.
+
+            true
+            (do
+              (log "znana niespójność paczki 'fidget': callback(i) GLFW w " base-nim
+                   " używają nim-natywnych typów (int32/float64/uint32) zamiast "
+                   "C-typów (cint/cdouble/cuint) oczekiwanych przez staticglfw -- łatam.")
+              (spit base-nim after)))
+          (try (os/rm tmp-out) ([_] nil)))
+        (do
+          (log "uwaga: nie udało się uruchomić auto-łatki fidget/GLFW na " base-nim
+               " (błąd `awk`?) -- pomijam, sprawdź ręcznie, jeśli build i tak padnie.")
+          (try (os/rm tmp-out) ([_] nil))))))
+  (try (os/rm awk-path) ([_] nil)))
+
 ## Paczki nimble potrzebne do zbudowania zde-shell (Fidget + jego
 ## zależności). Ta sama lista co w `requires` w zde.nimble -- trzymana też
 ## tutaj, żeby `ensure-nimble-deps` mogło sprawdzić obecność KAŻDEJ z
@@ -454,7 +610,11 @@
         (die (string "Zainstalowano co się dało, ale nadal brakuje: "
                      (string/join still-missing ", ") ". Sprawdź komunikaty nimble powyżej "
                      "-- może być potrzebne ręczne `nimble install <nazwa>` dla którejś z nich.")))
-      (log "OK: paczki nimble zainstalowane."))))
+      (log "OK: paczki nimble zainstalowane.")))
+  # Zawsze (nie tylko po świeżym install) -- patrz komentarz przy funkcji:
+  # ma to załatać też fidget doinstalowany kiedyś wcześniej, przed tą
+  # rozbudową build.janet.
+  (patch-fidget-glfw-callbacks))
 
 (defn generate-client-protocols []
   (log "generuję nagłówki protokołów Wayland dla zde-shell (GLFW/staticglfw)...")
