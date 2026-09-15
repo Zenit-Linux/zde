@@ -11,6 +11,12 @@ type
   ZdeConfig* = object
     accentColor*: string
     xkbLayout*: string   ## kod układu klawiatury XKB, np. "us", "pl", "de"
+    ## Rozbudowa (tapeta z pliku): bezwzględna ścieżka do obrazu wybranego
+    ## przez użytkownika w Ustawieniach, albo "" -- pusta wartość (i
+    ## domyślna dla konfiguracji sprzed tej rozbudowy, patrz
+    ## `defaultConfig` niżej) oznacza "użyj wbudowanego gradientu"
+    ## (`shell/wallpaper.nim`), dokładnie dawne, jedyne dotąd zachowanie.
+    wallpaperPath*: string
     monitors*: seq[MonitorConfig]
     shortcuts*: seq[ShortcutConfig]  ## nadpisania domyślnych skrótów (patrz shell/shortcuts.nim)
 
@@ -19,7 +25,7 @@ type
     combo*: string   ## np. "ctrl+alt+t", "super", "alt+tab"
 
 proc defaultConfig*(): ZdeConfig =
-  ZdeConfig(accentColor: "#5fb0ff", xkbLayout: "us", monitors: @[])
+  ZdeConfig(accentColor: "#5fb0ff", xkbLayout: "us", wallpaperPath: "", monitors: @[])
 
 proc configPath*(): string =
   let base = if getEnv("XDG_CONFIG_HOME", "").len > 0:
@@ -38,6 +44,8 @@ proc loadConfig*(): ZdeConfig =
       result.accentColor = j["accentColor"].getStr()
     if j.hasKey("xkbLayout") and j["xkbLayout"].kind == JString:
       result.xkbLayout = j["xkbLayout"].getStr()
+    if j.hasKey("wallpaperPath") and j["wallpaperPath"].kind == JString:
+      result.wallpaperPath = j["wallpaperPath"].getStr()
     if j.hasKey("monitors") and j["monitors"].kind == JArray:
       result.monitors = @[]
       for m in j["monitors"]:
@@ -68,6 +76,7 @@ proc saveConfig*(cfg: ZdeConfig) =
     var j = newJObject()
     j["accentColor"] = %cfg.accentColor
     j["xkbLayout"] = %cfg.xkbLayout
+    j["wallpaperPath"] = %cfg.wallpaperPath
     var marr = newJArray()
     for m in cfg.monitors:
       var mo = newJObject()
