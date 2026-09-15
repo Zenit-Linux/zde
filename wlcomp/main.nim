@@ -6,6 +6,10 @@ import toplevel
 import input
 import layershell
 import seatext
+import xwayland
+import session
+import idle
+import gestures
 
 ## NAPRAWIONY BRAK (IPC): zmiana monitorów/klawiatury w Ustawieniach
 ## (zde-shell) wymagała ręcznego restartu zde-comp -- configi były czytane
@@ -33,9 +37,14 @@ proc main() =
   let server = Server()
   gServer = server
   server.display = wlDisplayCreate()
-  server.backend = wlrBackendAutocreate(server.display)
+  server.backend = wlrBackendAutocreate(server.display, addr server.session)
   if server.backend == nil:
     quit("zde-comp: wlr_backend_autocreate() nie powiodło się")
+  ## Rozbudowa v0.1 ("Aurora"/DRM): `server.session` jest teraz naprawdę
+  ## wypełnione (gdy backend go używa -- patrz komentarz w `shim.c`),
+  ## dzięki czemu `hookSessionActive` niżej (po utworzeniu `seat`u, bo
+  ## dopiero wtedy sygnał ma sens jako "trzeba wybudzić kompozytor") może
+  ## faktycznie nasłuchiwać na przełączanie VT. Patrz `wlcomp/session.nim`.
 
   server.renderer = wlrRendererAutocreate(server.backend)
   if server.renderer == nil:
@@ -100,6 +109,13 @@ proc main() =
   zdeSignalAdd(addr seatEvents(server.seat).requestStartDrag, addr server.requestStartDragL, onRequestStartDrag)
   zdeSignalAdd(addr seatEvents(server.seat).startDrag, addr server.startDragL, onStartDrag)
 
+  ## Rozbudowa v0.1 ("Aurora"/DRM) -- patrz `wlcomp/session.nim`.
+  hookSessionActive(server)
+  ## Rozbudowa v0.1 ("Aurora"/DRM, DPMS) -- patrz `wlcomp/idle.nim`.
+  hookIdle(server)
+  ## Rozbudowa v0.1 ("Aurora"/gesty) -- patrz `wlcomp/gestures.nim`.
+  hookGestures(server)
+
   zdeSignalAdd(addr backendEvents(server.backend).newOutput, addr server.newOutputL, onNewOutput)
   zdeSignalAdd(addr backendEvents(server.backend).newInput, addr server.newInputL, onNewInput)
 
@@ -120,7 +136,16 @@ proc main() =
   server.xwayland = wlrXwaylandCreate(server.display, server.compositor, false)
   if server.xwayland != nil:
     wlrXwaylandSetSeat(server.xwayland, server.seat)
-    stderr.writeLine("zde-comp: XWayland gotowy na DISPLAY=" & "(patrz zmienna środowiskowa DISPLAY procesu Xwayland)")
+    ## Rozbudowa v0.1 ("Aurora"/XWayland): do tej pory kompozytor
+    ## URUCHAMIAŁ proces Xwayland, ale nigdy nie nasłuchiwał na jego
+    ## `events.new_surface` -- więc żadne okno X11 nigdy nie trafiało do
+    ## sceny/listy `toplevels` (patrz `wlcomp/xwayland.nim` i komentarz
+    ## "ZWERYFIKOWANE KOMPILACJĄ" nad `WlrXwayland` w `wlroots.nim`).
+    zdeSignalAdd(addr xwaylandEvents(server.xwayland).newSurface, addr server.newXwaylandSurfaceL, onNewXwaylandSurface)
+    ## `display_name` (np. ":2") to prawdziwe pole z `wlr_xwayland`, nie
+    ## placeholder -- patrz `WlrXwayland` w `wlroots.nim`.
+    let dn = if server.xwayland.displayName != nil: $server.xwayland.displayName else: "?"
+    stderr.writeLine("zde-comp: XWayland gotowy na DISPLAY=" & dn)
 
   stderr.writeLine("zde-comp: uruchomiony na WAYLAND_DISPLAY=" & $socket)
 
