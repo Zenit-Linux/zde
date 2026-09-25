@@ -1,6 +1,6 @@
 package {
   name        = "zde"
-  version     = "0.1.0"
+  version     = "0.2.0"
   arch        = ["x86_64"]
   description = "Zenit Desktop Environment (ZDE) -- srodowisko graficzne Zenit Linux (kompozytor Wayland zde-comp + shell zde-shell), w Nimie + Fidget"
   depends_on  = ["wlroots", "wayland", "xkbcommon"]
