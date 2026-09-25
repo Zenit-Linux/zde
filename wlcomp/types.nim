@@ -23,6 +23,9 @@ type
     xdgShell*: ptr WlrXdgShell
     layerShell*: ptr WlrLayerShellV1
     dataDeviceMgr*: ptr WlrDataDeviceManager
+    ## Rozbudowa v0.2 ("primary selection" -- schowek pierwotny, środkowy
+    ## klik w stylu X11) -- patrz `wlcomp/seatext.nim`/`wlroots.nim`.
+    primarySelectionMgr*: ptr WlrPrimarySelectionV1DeviceManager
     cursor*: ptr WlrCursor
     xcursorMgr*: ptr WlrXcursorManager
     seat*: ptr WlrSeat
@@ -48,6 +51,11 @@ type
     swipeBeginL*, swipeUpdateL*, swipeEndL*: WlListener
     gestureFingers*: uint32     ## liczba palców bieżącego gestu (0 = żaden aktywny)
     gestureAccumDx*: float      ## suma przesunięcia w poziomie od swipe_begin
+    ## Runda 34 -- pinch/hold, tylko re-broadcast do klientów (patrz
+    ## `wlcomp/gestures.nim`), więc bez własnego pola akumulacji jak przy
+    ## swipe -- kompozytor nie musi nic sumować, tylko przekazać dalej.
+    pinchBeginL*, pinchUpdateL*, pinchEndL*: WlListener
+    holdBeginL*, holdEndL*: WlListener
     ## Cztery stałe pod-drzewa sceny, utworzone RAZ przy starcie, w tej
     ## kolejności (wlroots domyślnie stackuje węzły w kolejności DODANIA --
     ## później dodany = wyżej -- stąd kolejność poniższych pól ma
@@ -79,6 +87,8 @@ type
     newXwaylandSurfaceL*: WlListener
     newInputL*: WlListener
     requestSetSelectionL*: WlListener
+    ## Rozbudowa v0.2 ("primary selection") -- patrz `wlcomp/seatext.nim`.
+    requestSetPrimarySelectionL*: WlListener
     requestStartDragL*: WlListener
     startDragL*: WlListener
     dragIconDestroyL*: WlListener
