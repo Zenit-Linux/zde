@@ -1,4 +1,4 @@
-import std/[os, algorithm, strutils, strformat, times, sequtils, re, osproc]
+import std/[os, algorithm, strutils, strformat, times, sequtils, re, osproc, streams]
 import fidget
 import ../../comp/comp
 import ../../shell/notifications
