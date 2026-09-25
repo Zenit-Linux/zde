@@ -149,13 +149,22 @@ var lastAppDirsSignature = appDirsSignature()
 
 proc rescanSystemAppsIfChanged*() =
   ## Wołane raz na sekundę z `tickMain()` w `shell/shell.nim` (ten sam
-  ## rytm co zegar/monitor systemu) -- przebudowuje `SystemAppGroups`
-  ## TYLKO wtedy, gdy `appDirsSignature()` faktycznie się zmieniło (nowy
-  ## pakiet zainstalowany/usunięty), więc w normalnej pracy to tylko
-  ## tania sumaryczna operacja na kilku `stat()`, nie pełne, kosztowne
-  ## parsowanie wszystkich plików `.desktop` w systemie co sekundę.
+  ## rytm co zegar/monitor systemu) -- przebudowuje `SystemAppGroups`,
+  ## gdy COKOLWIEK z dwóch niezależnych sygnałów wskaże zmianę:
+  ## (1) `appDirsSignature()`, jak dotychczas (suma mtime katalogów --
+  ## łapie dodanie/usunięcie/zmianę nazwy pliku `.desktop`), LUB
+  ## (2) `appDirsChangedViaInotify()` (od tej rozbudowy -- nieblokujący
+  ## odczyt `inotify`, patrz duży komentarz w `desktopapps.nim` -- łapie
+  ## DODATKOWO edycję TREŚCI istniejącego pliku w miejscu, czego (1) nie
+  ## widzi, bo taka zmiana nie dotyka mtime katalogu nadrzędnego).
+  ## Celowo NIE zastępujemy (1) przez (2) -- trzymamy oba: (2) może po
+  ## cichu nie działać (patrz `gInotifyFd < 0` w `ensureInotifyWatches`,
+  ## np. wyczerpany limit deskryptorów w systemie), więc (1) zostaje jako
+  ## niezależna siatka bezpieczeństwa, nie tylko poprzednik do zastąpienia.
   let sig = appDirsSignature()
-  if sig != lastAppDirsSignature:
+  let sigChanged = sig != lastAppDirsSignature
+  let inotifyChanged = appDirsChangedViaInotify()
+  if sigChanged or inotifyChanged:
     lastAppDirsSignature = sig
     SystemAppGroups = buildSystemAppGroups()
 
