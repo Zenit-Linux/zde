@@ -19,6 +19,13 @@ type
   ## przyciągać ponownie.
   SnapEdge* = enum
     seNone, seLeft, seRight
+    ## Rozbudowa (runda 21): górna/dolna połowa ekranu ORAZ cztery
+    ## ćwiartki -- domyka realny brak (dotąd tylko lewa/prawa połowa).
+    ## `comp/window.nim` (`snapWindow`/`snapGeometry`/`combinedEdge`)
+    ## implementuje "doprecyzowanie" znane z Windows 11 Snap: przyciągnięcie
+    ## do lewej, a POTEM do góry, daje ĆWIARTKĘ lewą-górną, nie połowę
+    ## całego ekranu -- patrz duży komentarz przy `combinedEdge`.
+    seTop, seBottom, seTopLeft, seTopRight, seBottomLeft, seBottomRight
 
   ResizeEdge* = enum
     reNone
@@ -63,6 +70,20 @@ type
     ## przekazywanym argumencie `win` omija ten problem całkowicie, bez
     ## dokładania nowych zależności.
     focused*: bool
+    ## Rozbudowa (runda 32, "przypnij na wierzchu"): `true` -- okno
+    ## renderuje się ZAWSZE nad wszystkimi NIEPRZYPIĘTYMI oknami, bez
+    ## względu na to, które z nich jest akurat ogniskowane. ŚWIADOMIE
+    ## dotyczy WYŁĄCZNIE `windowsInZOrder` (kolejność RYSOWANIA) -- NIE
+    ## rusza `zIndex` samego okna ani logiki fokusu/Alt+Tab
+    ## (`cycleFocus`, `focusNextBestOnWorkspace`), które nadal operują na
+    ## surowym `zIndex`, bez świadomości przypinania. Ta rundowa decyzja
+    ## o zakresie jest CELOWA, nie przypadkowa: dotychczasowe rundy
+    ## (24-31) wielokrotnie znajdowały prawdziwe błędy właśnie tam, gdzie
+    ## DWIE różne funkcje inaczej interpretowały to samo pojęcie
+    ## "kolejności okien" -- dodanie nowego wymiaru (przypięcie) TYLKO do
+    ## rysowania, a nie do fokusu, minimalizuje ryzyko dołożenia kolejnej
+    ## takiej niespójności zamiast jej uniknięcia.
+    alwaysOnTop*: bool
   DragKind* = enum
     dkNone, dkMove, dkResize
 
@@ -73,6 +94,20 @@ type
     grabOffset*: Vec2       ## offset kursora względem lewego-górnego rogu okna
     startPos*: Vec2
     startSize*: Vec2
+    ## Rozbudowa (runda 22): podczas przeciągania okna myszą (`dkMove`),
+    ## zbliżenie kursora do krawędzi ekranu sygnalizuje "po puszczeniu
+    ## przycisku myszy, przyciągnij to okno" -- klasyczny gest "Aero
+    ## Snap", znany z Windows/GNOME (przeciągnij do samej góry ekranu =
+    ## maksymalizuj, do lewej/prawej krawędzi = połowa ekranu). Sam SNAP
+    ## dzieje się dopiero w `endDrag` (na puszczenie przycisku myszy),
+    ## NIE na bieżąco podczas przeciągania -- w przeciwnym razie okno
+    ## zmieniałoby rozmiar W TRAKCIE przeciągania, utrudniając dalsze
+    ## manewrowanie nim, gdyby użytkownik jeszcze zmienił zdanie co do
+    ## miejsca. Patrz `comp/drag.nim` (`updateDrag`/`endDrag`) po samą
+    ## logikę -- te dwa pola to WYŁĄCZNIE stan przenoszony między nimi w
+    ## obrębie jednego przeciągnięcia.
+    pendingSnapEdge*: SnapEdge  ## `seLeft`/`seRight` -- połowa ekranu przy puszczeniu; `seNone` -- brak
+    pendingMaximize*: bool      ## `true` -- kursor przy samej górze ekranu, puszczenie = pełna maksymalizacja
 
   Compositor* = ref object
     windows*: seq[ZdeWindow]
@@ -113,6 +148,17 @@ type
     ## pulpit (0-indeksowany, patrz `workspace` w `ZdeWindow`). Nowe okna
     ## (`openWindow` w `comp/window.nim`) lądują na TYM pulpicie.
     currentWorkspace*: int
+    ## Rozbudowa (runda 28, "Pokaż pulpit"): `true`, gdy
+    ## `toggleShowDesktop` właśnie zminimalizowało WSZYSTKIE widoczne
+    ## okna na bieżącym pulpicie -- drugie wywołanie (albo ten sam
+    ## skrót ponownie) przywraca TYLKO te, które ONO zminimalizowało
+    ## (`showDesktopIds` niżej), nie WSZYSTKIE zminimalizowane okna --
+    ## inaczej okno, które użytkownik zminimalizował RĘCZNIE PRZED
+    ## wywołaniem "Pokaż pulpit", zostałoby po cichu przywrócone razem z
+    ## resztą, mimo że użytkownik nigdy o to nie prosił.
+    showDesktopActive*: bool
+    showDesktopIds*: seq[int]     ## id okien zminimalizowanych PRZEZ "Pokaż pulpit" -- tylko te dostają przywrócenie
+    showDesktopPrevFocusedId*: int  ## co było ogniskowane TUŻ PRZED "Pokaż pulpit" -- przywracane razem z oknami
 
 const
   DefaultMinSize* = vec2(280, 180)
@@ -126,3 +172,12 @@ const
   ## trzeba było zmieniać osobno.
   TaskbarHeight* = 56.0'f32
   SnapMargin* = 12.0'f32
+  ## Rozbudowa (runda 22): strefa przy SAMEJ GÓRZE ekranu, w której
+  ## puszczenie przeciąganego okna maksymalizuje je (gest "Aero Snap",
+  ## patrz `pendingMaximize` wyżej) -- CELOWO węższa niż `SnapMargin`
+  ## (4px vs 12px): to gest, którego skutek jest DUŻO bardziej inwazyjny
+  ## (pełna maksymalizacja, nie tylko magnetyczne wyrównanie pozycji o
+  ## kilka pikseli), więc strefa aktywacji musi być ciasna, żeby zwykłe
+  ## przesuwanie okna blisko górnej krawędzi (bez INTENCJI
+  ## zmaksymalizowania go) nie kończyło się przypadkową maksymalizacją.
+  TopDragSnapZone* = 4.0'f32
