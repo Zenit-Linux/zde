@@ -555,6 +555,14 @@ type
     swipeBegin* {.importc: "events.swipe_begin".}: WlSignal
     swipeUpdate* {.importc: "events.swipe_update".}: WlSignal
     swipeEnd* {.importc: "events.swipe_end".}: WlSignal
+    ## Runda 34 -- pinch i hold, ten sam re-broadcast obowiązek co swipe
+    ## (patrz komentarz nad `swipeBegin` wyżej) -- `wlr_cursor` agreguje
+    ## je identycznie.
+    pinchBegin* {.importc: "events.pinch_begin".}: WlSignal
+    pinchUpdate* {.importc: "events.pinch_update".}: WlSignal
+    pinchEnd* {.importc: "events.pinch_end".}: WlSignal
+    holdBegin* {.importc: "events.hold_begin".}: WlSignal
+    holdEnd* {.importc: "events.hold_end".}: WlSignal
   WlrXcursorManager* {.importc: "struct wlr_xcursor_manager", header: "wlr/types/wlr_xcursor_manager.h", incompleteStruct.} = object
 
 proc wlrSeatCreate*(d: ptr WlDisplay, name: cstring): ptr WlrSeat {.importc: "wlr_seat_create", header: "wlr/types/wlr_seat.h".}
@@ -604,6 +612,34 @@ type
     requestSetSelection* {.importc: "events.request_set_selection".}: WlSignal
     requestStartDrag* {.importc: "events.request_start_drag".}: WlSignal
     startDrag* {.importc: "events.start_drag".}: WlSignal
+    ## Rozbudowa v0.2 ("primary selection" -- schowek PIERWOTNY, środkowy
+    ## klik w stylu X11): dokładnie ten sam kształt sygnału co
+    ## `requestSetSelection` wyżej (patrz `WlrSeatRequestSetPrimarySelectionEvent`
+    ## niżej -- `wlr_seat_request_set_primary_selection_event` w
+    ## nagłówku ma DOKŁADNIE te same dwa pola co `wlr_seat_request_set_selection_event`,
+    ## tylko inny typ `source`), więc obsługa w `wlcomp/seatext.nim` to
+    ## kopia `onRequestSetSelection` ze zmienionym typem, nie nowy wzorzec.
+    requestSetPrimarySelection* {.importc: "events.request_set_primary_selection".}: WlSignal
+
+  ## "Primary selection" (schowek pierwotny, środkowy klik) był dotąd
+  ## CAŁKOWICIE nieobsłużony -- `zde-comp` w ogóle nie tworzył
+  ## `wlr_primary_selection_v1_device_manager`, więc protokół
+  ## `zwp_primary_selection_v1` nigdy nie trafiał do rejestru Waylanda --
+  ## klienty (np. terminale, GTK) poprawnie wykrywały jego brak i po
+  ## prostu nie oferowały schowka pierwotnego, ale to był realny, jawnie
+  ## wypisany w README brak funkcji, nie subtelny bug. Patrz
+  ## `wlcomp/seatext.nim` (`onRequestSetPrimarySelection`) i `main.nim`
+  ## (`wlrPrimarySelectionV1DeviceManagerCreate`) po resztę.
+  WlrPrimarySelectionSource* {.importc: "struct wlr_primary_selection_source", header: "wlr/types/wlr_primary_selection.h", incompleteStruct.} = object
+
+  WlrSeatRequestSetPrimarySelectionEvent* {.importc: "struct wlr_seat_request_set_primary_selection_event", header: "wlr/types/wlr_primary_selection.h", incompleteStruct.} = object
+    source* {.importc: "source".}: ptr WlrPrimarySelectionSource
+    serial*: uint32
+
+  WlrPrimarySelectionV1DeviceManager* {.importc: "struct wlr_primary_selection_v1_device_manager", header: "wlr/types/wlr_primary_selection_v1.h", incompleteStruct.} = object
+
+proc wlrPrimarySelectionV1DeviceManagerCreate*(d: ptr WlDisplay): ptr WlrPrimarySelectionV1DeviceManager {.importc: "wlr_primary_selection_v1_device_manager_create", header: "wlr/types/wlr_primary_selection_v1.h".}
+proc wlrSeatSetPrimarySelection*(seat: ptr WlrSeat, source: ptr WlrPrimarySelectionSource, serial: uint32) {.importc: "wlr_seat_set_primary_selection", header: "wlr/types/wlr_primary_selection.h".}
 
 proc seatEvents*(s: ptr WlrSeat): ptr WlrSeatEvents {.inline.} = cast[ptr WlrSeatEvents](s)
 proc wlrSeatSetSelection*(seat: ptr WlrSeat, source: ptr WlrDataSource, serial: uint32) {.importc: "wlr_seat_set_selection", header: "wlr/types/wlr_seat.h".}
@@ -770,12 +806,21 @@ proc wlrIdleNotifierV1NotifyActivity*(notifier: ptr WlrIdleNotifierV1, seat: ptr
 # Gesty touchpada (swipe)
 # ---------------------------------------------------------------------------
 ## Rozbudowa v0.1 ("Aurora"/gesty). Patrz `wlcomp/gestures.nim` po pełny
-## opis. W skrócie: obsługujemy tylko SWIPE (przesunięcie kilkoma palcami),
-## nie pinch (zbliżanie/oddalanie) ani hold -- swipe 3-palcowy w lewo/prawo
-## przełącza aktywne okno (ten sam mechanizm co Alt+Tab, ale gestem).
-## Pinch/hold zostają świadomie poza zakresem (brak jeszcze naturalnego
-## zastosowania w ZDE -- np. pinch do zoomowania miałby sens w przeglądarce
-## plików czy przeglądarce obrazów, których ZDE jeszcze nie ma).
+## opis. Swipe 3-palcowy w lewo/prawo przełącza aktywne okno (ten sam
+## mechanizm co Alt+Tab, ale gestem).
+##
+## Runda 34 -- pinch i hold. Kompozytor sam WCIĄŻ nie reaguje na nie
+## żadną własną akcją (patrz uczciwa notatka w `gestures.nim` -- brak
+## dziś w ZDE oczywistego, jednoznacznego zastosowania: menedżer plików
+## i przeglądarka obrazów, gdzie pinch-to-zoom miałby sens, nie istnieją
+## jako osobne okna z własnym zoomem), ale oba typy zdarzeń są teraz
+## PRZEKAZYWANE DALEJ do klientów przez `wlr_pointer_gestures_v1` --
+## dokładnie ten sam re-broadcast, który swipe miał od rundy "Aurora".
+## Aplikacje (np. przeglądarka WWW uruchomiona przez XWayland), które
+## same nasłuchują tego protokołu, teraz dostają pinch/hold niezależnie
+## od tego, że kompozytor nic z nimi własnego nie robi -- to samo
+## rozróżnienie "reakcja kompozytora" vs "re-broadcast do klienta", co
+## przy swipe.
 type
   WlrPointerSwipeBeginEvent* {.importc: "struct wlr_pointer_swipe_begin_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
     timeMsec* {.importc: "time_msec".}: uint32
@@ -802,3 +847,36 @@ proc wlrPointerGesturesV1Create*(display: ptr WlDisplay): ptr WlrPointerGestures
 proc wlrPointerGesturesV1SendSwipeBegin*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec, fingers: uint32) {.importc: "wlr_pointer_gestures_v1_send_swipe_begin", header: "wlr/types/wlr_pointer_gestures_v1.h".}
 proc wlrPointerGesturesV1SendSwipeUpdate*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, dx, dy: cdouble) {.importc: "wlr_pointer_gestures_v1_send_swipe_update", header: "wlr/types/wlr_pointer_gestures_v1.h".}
 proc wlrPointerGesturesV1SendSwipeEnd*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, cancelled: bool) {.importc: "wlr_pointer_gestures_v1_send_swipe_end", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+
+## Runda 34 -- pinch/hold: struktury zdarzeń i re-broadcast do klientów,
+## patrz duży komentarz wyżej i `wlcomp/gestures.nim`.
+type
+  WlrPointerPinchBeginEvent* {.importc: "struct wlr_pointer_pinch_begin_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    fingers* {.importc: "fingers".}: uint32
+
+  WlrPointerPinchUpdateEvent* {.importc: "struct wlr_pointer_pinch_update_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    fingers* {.importc: "fingers".}: uint32
+    dx* {.importc: "dx".}: cdouble
+    dy* {.importc: "dy".}: cdouble
+    scale* {.importc: "scale".}: cdouble
+    rotation* {.importc: "rotation".}: cdouble
+
+  WlrPointerPinchEndEvent* {.importc: "struct wlr_pointer_pinch_end_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    cancelled* {.importc: "cancelled".}: bool
+
+  WlrPointerHoldBeginEvent* {.importc: "struct wlr_pointer_hold_begin_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    fingers* {.importc: "fingers".}: uint32
+
+  WlrPointerHoldEndEvent* {.importc: "struct wlr_pointer_hold_end_event", header: "wlr/types/wlr_pointer.h", incompleteStruct.} = object
+    timeMsec* {.importc: "time_msec".}: uint32
+    cancelled* {.importc: "cancelled".}: bool
+
+proc wlrPointerGesturesV1SendPinchBegin*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec, fingers: uint32) {.importc: "wlr_pointer_gestures_v1_send_pinch_begin", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendPinchUpdate*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, dx, dy, scale, rotation: cdouble) {.importc: "wlr_pointer_gestures_v1_send_pinch_update", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendPinchEnd*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, cancelled: bool) {.importc: "wlr_pointer_gestures_v1_send_pinch_end", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendHoldBegin*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec, fingers: uint32) {.importc: "wlr_pointer_gestures_v1_send_hold_begin", header: "wlr/types/wlr_pointer_gestures_v1.h".}
+proc wlrPointerGesturesV1SendHoldEnd*(g: ptr WlrPointerGesturesV1, seat: ptr WlrSeat, timeMsec: uint32, cancelled: bool) {.importc: "wlr_pointer_gestures_v1_send_hold_end", header: "wlr/types/wlr_pointer_gestures_v1.h".}
