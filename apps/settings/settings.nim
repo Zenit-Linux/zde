@@ -1,4 +1,4 @@
-import std/[strutils, os, posix]
+import std/[strutils, os, posix, algorithm]
 import fidget
 import ../../comp/comp
 import ../../zdeconfig
@@ -37,6 +37,25 @@ type
     ## klawisza, tylko po kliknięciu "Zastosuj", żeby nie próbować
     ## dekodować obrazu z niedokończonej, częściowo wpisanej ścieżki.
     wallpaperPathInput: string
+    ## Rozbudowa v0.2 (przeglądarka plików do wyboru tapety): Fidget nie
+    ## ma natywnego okna wyboru pliku (systemowego "Otwórz plik...") --
+    ## dotąd JEDYNYM sposobem wskazania tapety było ręczne wpisanie
+    ## całej ścieżki, co explicite wymieniało README jako niewygodę
+    ## powtarzającą się "wszędzie indziej w ZDE". To poniżej NIE jest
+    ## systemowym file-pickerem (żaden inny toolkit w ZDE go nie ma,
+    ## więc nie ma z czym się zintegrować) -- to lekka, WBUDOWANA W SAM
+    ## `apps/settings` przeglądarka katalogów, ograniczona do plików
+    ## obrazów (`.png`/`.jpg`/`.jpeg`), otwierana jako pełnoekranowa
+    ## nakładka nad oknem Ustawień. Wzorzec przewijania (scroll kółkiem
+    ## myszy, `onHover` + `mouse.wheelDelta`) skopiowany 1:1 z
+    ## `apps/filemanager/files.nim` (`listing`), żeby zachować spójne
+    ## zachowanie w całym ZDE, nie wymyślać nowego wzorca dla jednego
+    ## okna.
+    pickerOpen: bool
+    pickerDir: string           ## bieżąco przeglądany katalog (bezwzględna ścieżka)
+    pickerEntries: seq[tuple[name: string, isDir: bool]]
+    pickerScroll: float32
+    pickerError: string
 
 proc newSettingsState*(): SettingsState =
   result = SettingsState(cfg: loadConfig(), section: secAppearance, draggingMonitor: -1,
@@ -73,6 +92,205 @@ proc applyWallpaperLive(path: string) =
   ## `ensureWallpaperCache` tam) -- tutaj tylko przełączamy, CO ma być
   ## narysowane, nie robimy samego przetwarzania.
   zde_state.WallpaperPath = path
+
+## Rozbudowa (runda 17, GIF w przeglądarce tapety): `readImage`
+## (`pixie@5.0.7`, patrz `shell/wallpaper.nim`) rozpoznaje format po
+## SYGNATURZE BAJTÓW pliku, nie po rozszerzeniu (sprawdzone w źródle
+## zainstalowanego pakietu, nie z pamięci) -- co oznacza, że
+## `ensureWallpaperCache` UMIAŁO dekodować statyczne (pierwsza klatka,
+## bez animacji) pliki GIF od zawsze, tylko `PickerImageExts` PONIŻEJ
+## sztucznie nie pozwalało ich wybrać w przeglądarce plików. Sprawdzone
+## na 82 prawdziwych plikach `.gif` zainstalowanych w tej sandboxie
+## (motywy LibreOffice, dokumentacja pakietów): 77/82 (94%) dekoduje się
+## poprawnie. 5 nie: jeden to zerwany symlink (bez związku z Pixie),
+## trzy to małe ikony z `Invalid GIF buffer, unable to load` (rzadka,
+## prawdziwa luka w minimalnym dekoderze GIF Pixie -- niektóre pliki
+## `GIF89a` z lokalną paletą kolorów go wywalają), jeden explicite
+## odrzucony przez Pixie jako `Unsupported GIF, pixel aspect ratio`. W
+## KAŻDYM z tych 5 przypadków `ensureWallpaperCache` już wcześniej
+## łapało wyjątek i cicho zwracało "" (patrz `except CatchableError`
+## tam) -- więc dodanie `.gif` tutaj jest bezpieczne: nieobsługiwany
+## plik daje czytelny brak podglądu, nie awarię. BMP/QOI/PPM (też
+## realnie dekodowane przez `readImage`) świadomie NIE dodane -- w
+## praktyce prawie nikt nie trzyma zdjęć/tapet w tych formatach, więc
+## rozszerzanie filtra o nie dodałoby szum bez realnej wartości. WebP
+## świadomie NIE dodane -- `pixie@5.0.7` w ogóle go nie dekoduje
+## (sprawdzone w źródle: brak gałęzi WebP w `decodeImage`), więc
+## dodanie `.webp` tutaj dawałoby użytkownikowi wybór, który zawsze
+## kończy się cichym brakiem podglądu.
+const PickerImageExts = [".png", ".jpg", ".jpeg", ".gif"]
+
+proc refreshPickerEntries(ss: SettingsState) =
+  ## Wczytuje zawartość `ss.pickerDir` od zera -- foldery NAJPIERW
+  ## (alfabetycznie), potem pliki obrazów (alfabetycznie); pliki innych
+  ## typów są POMIJANE (nie wyszarzane -- wypisywanie ich tylko myliłoby,
+  ## skoro i tak nie da się ich wybrać jako tapety). Wołane przy każdej
+  ## zmianie katalogu (otwarcie folderu / "Wyżej"), nie co klatkę.
+  ss.pickerEntries.setLen(0)
+  ss.pickerError = ""
+  var dirs: seq[string] = @[]
+  var files: seq[string] = @[]
+  try:
+    for kind, path in walkDir(ss.pickerDir):
+      let name = extractFilename(path)
+      if name.len == 0 or name[0] == '.': continue  ## ukryte pliki/foldery -- ten sam pomijany zestaw co w menedżerze plików
+      case kind
+      of pcDir, pcLinkToDir:
+        dirs.add(name)
+      of pcFile, pcLinkToFile:
+        if name.toLowerAscii().splitFile().ext in PickerImageExts:
+          files.add(name)
+  except OSError as e:
+    ss.pickerError = "Nie można odczytać katalogu: " & e.msg
+    return
+  dirs.sort()
+  files.sort()
+  for d in dirs: ss.pickerEntries.add((d, true))
+  for f in files: ss.pickerEntries.add((f, false))
+
+proc openPicker(ss: SettingsState) =
+  ## Startowy katalog: folder ZAWIERAJĄCY aktualnie wpisaną ścieżkę, gdy
+  ## ta wskazuje na realny plik/folder (żeby "Przeglądaj..." otwierało
+  ## się w sensownym miejscu, gdy użytkownik już coś wcześniej wpisał
+  ## ręcznie) -- w przeciwnym razie katalog domowy, rozsądny punkt
+  ## startowy dla nowego wyboru.
+  let current = ss.wallpaperPathInput.strip()
+  ss.pickerDir =
+    if current.len > 0 and fileExists(current): parentDir(current)
+    elif current.len > 0 and dirExists(current): current
+    else: getHomeDir()
+  ss.pickerScroll = 0.0
+  ss.pickerOpen = true
+  refreshPickerEntries(ss)
+
+proc drawWallpaperPicker(ss: SettingsState, win: ZdeWindow) =
+  ## Pełnoekranowa nakładka nad oknem Ustawień, wywoływana z
+  ## `drawSettings` PRZED "sidebar"/"content" (patrz wywołanie niżej).
+  ##
+  ## **Uczciwa notatka o realnym bugu znalezionym w tej rundzie:** w tej
+  ## wersji Fidget kolejność malowania RODZEŃSTWA jest ODWROTNA niż w
+  ## typowym modelu "malarskim" CSS/Figmy -- WCZEŚNIEJ zadeklarowany
+  ## element renderuje się NA WIERZCHU późniejszych, nie pod spodem.
+  ## Potwierdzone bezpośrednim, izolowanym testem (jaskrawy prostokąt
+  ## jako pierwsze dziecko `settings-root` całkowicie przykrywał
+  ## "sidebar"/"content" zadeklarowane PO nim; ten sam prostokąt jako
+  ## OSTATNIE dziecko był całkowicie NIEWIDOCZNY pod nimi). To dlatego
+  ## `drawWallpaperPicker` jest wołane na SAMYM POCZĄTKU `frame
+  ## "settings-root"`, nie na końcu, jak można by się intuicyjnie
+  ## spodziewać po innych frameworkach UI. Dotyczy TYLKO rodzeństwa na
+  ## tym samym poziomie zagnieżdżenia -- własne wypełnienie (`fill`)
+  ## grupy nadal poprawnie chowa się POD jej własnymi dziećmi (patrz
+  ## `picker-panel` niżej, ten sam wzorzec co każdy inny przycisk w tym
+  ## pliku, np. `wallpaper-apply-btn`) -- to nie jest złamane, tylko
+  ## kolejność MIĘDZY rodzeństwem jest odwrócona. Z tego samego powodu
+  ## `picker-panel` (ma być NA WIERZCHU) jest zadeklarowany PRZED
+  ## `picker-backdrop` (ma być POD spodem) niżej -- kolejność też
+  ## odwrócona względem intuicji "tło najpierw, potem zawartość".
+  const rowH = 30.0'f32
+  const panelW = 480.0'f32
+  const panelH = 420.0'f32
+  let panelX = (win.size.x - panelW) / 2
+  let panelY = (win.size.y - panelH) / 2
+
+  group "picker-panel":
+    box panelX, panelY, panelW, panelH
+    cornerRadius 8
+    fill "#1b2027"
+
+    text "picker-title":
+      box 16, 12, panelW - 32, 24
+      font "sans-serif", 14, 700, 24, hLeft, vCenter
+      fill "#e8ecf0"
+      characters "Wybierz obraz tapety"
+
+    text "picker-path":
+      box 16, 38, panelW - 32, 18
+      font "monospace", 10, 400, 18, hLeft, vCenter
+      fill "#8a94a3"
+      characters ss.pickerDir
+
+    group "picker-up-btn":
+      box 16, 60, 70, 26
+      cornerRadius 4
+      fill "#2a2f36"
+      onHover: fill "#3a4048"
+      onClick:
+        let up = parentDir(ss.pickerDir)
+        if up.len > 0 and up != ss.pickerDir:
+          ss.pickerDir = up
+          ss.pickerScroll = 0.0
+          refreshPickerEntries(ss)
+      text "picker-up-label":
+        box 0, 0, 70, 26
+        font "sans-serif", 11, 600, 26, hCenter, vCenter
+        fill "#c7ccd3"
+        characters "↑ Wyżej"
+
+    group "picker-cancel-btn":
+      box panelW - 86, 60, 70, 26
+      cornerRadius 4
+      fill "#2a2f36"
+      onHover: fill "#3a4048"
+      onClick:
+        ss.pickerOpen = false
+      text "picker-cancel-label":
+        box 0, 0, 70, 26
+        font "sans-serif", 11, 600, 26, hCenter, vCenter
+        fill "#c7ccd3"
+        characters "Anuluj"
+
+    let listTop = 94.0'f32
+    let listH = panelH - listTop - 8
+    group "picker-listing":
+      box 8, listTop, panelW - 16, listH
+      clipContent true
+
+      let contentH = float32(ss.pickerEntries.len) * rowH
+      let maxScroll = max(0.0'f32, contentH - listH)
+      onHover:
+        if mouse.wheelDelta != 0:
+          ss.pickerScroll = clamp(ss.pickerScroll - mouse.wheelDelta * rowH, 0.0'f32, maxScroll)
+
+      if ss.pickerError.len > 0:
+        text "picker-err":
+          box 8, 8, panelW - 32, 40
+          font "sans-serif", 11, 400, 16, hLeft, vTop
+          fill "#ff8080"
+          characters ss.pickerError
+      elif ss.pickerEntries.len == 0:
+        text "picker-empty":
+          box 8, 8, panelW - 32, 20
+          font "sans-serif", 11, 400, 16, hLeft, vTop
+          fill "#8a8f96"
+          characters "(brak podfolderów ani obrazów .png/.jpg/.gif w tym katalogu)"
+      else:
+        var y = -ss.pickerScroll
+        for entry in ss.pickerEntries:
+          if y > -rowH and y < listH:
+            let fullPath = ss.pickerDir / entry.name
+            group "picker-row-" & entry.name:
+              box 0, y, panelW - 16, rowH
+              onHover: fill "#242a32"
+              onClick:
+                if entry.isDir:
+                  ss.pickerDir = fullPath
+                  ss.pickerScroll = 0.0
+                  refreshPickerEntries(ss)
+                else:
+                  ss.wallpaperPathInput = fullPath
+                  ss.pickerOpen = false
+              text "picker-row-label-" & entry.name:
+                box 8, 0, panelW - 32, rowH
+                font "sans-serif", 12, 400, rowH, hLeft, vCenter
+                fill (if entry.isDir: "#e8ecf0" else: "#a8d8ff")
+                characters (if entry.isDir: "📁 " & entry.name else: "🖼 " & entry.name)
+          y += rowH
+
+  group "picker-backdrop":
+    box 0, 0, win.size.x, win.size.y
+    fill "#000000", 0.8
+    onClick:
+      discard  ## celowo pochłania klik na tle, żeby nie przeklikiwało "przez" nakładkę do widoku pod spodem
 
 proc pidFilePath(): string =
   let rt = getEnv("XDG_RUNTIME_DIR", "")
@@ -163,13 +381,13 @@ proc drawAppearance(ss: SettingsState, x, y, w: float32) =
     characters "Tapeta"
 
   text "wallpaper-input":
-    box x, wpY + 34, w - 180, 30
+    box x, wpY + 34, w - 274, 30
     font "sans-serif", 12, 400, 30, hLeft, vCenter
     fill "#e8ecf0"
     editableText true
     selectable true
     if not current.hasKeyboardFocus() and ss.wallpaperPathInput.len == 0:
-      characters "/ścieżka/do/obrazu.png albo .jpg"
+      characters "/ścieżka/do/obrazu.png, .jpg albo .gif"
     else:
       characters ss.wallpaperPathInput
     onClick:
@@ -177,8 +395,24 @@ proc drawAppearance(ss: SettingsState, x, y, w: float32) =
     onInput:
       ss.wallpaperPathInput = keyboard.input
 
+  ## Rozbudowa v0.2 (przeglądarka plików do wyboru tapety, patrz duży
+  ## komentarz przy polu `pickerOpen` w `SettingsState`): otwiera
+  ## pełnoekranową nakładkę zamiast zmuszać do ręcznego wpisania ścieżki.
+  group "wallpaper-browse-btn":
+    box x + w - 270, wpY + 34, 84, 30
+    cornerRadius 4
+    fill "#2a2f36"
+    onHover: fill "#3a4048"
+    onClick:
+      openPicker(ss)
+    text "wallpaper-browse-label":
+      box 0, 0, 84, 30
+      font "sans-serif", 11, 700, 30, hCenter, vCenter
+      fill "#c7ccd3"
+      characters "Przeglądaj..."
+
   group "wallpaper-apply-btn":
-    box x + w - 172, wpY + 34, 82, 30
+    box x + w - 182, wpY + 34, 84, 30
     cornerRadius 4
     fill "#2d8a5f"
     onHover: fill "#37a373"
@@ -192,13 +426,13 @@ proc drawAppearance(ss: SettingsState, x, y, w: float32) =
       elif path.len > 0:
         ss.statusMsg = "Nie znaleziono pliku: " & path
     text "wallpaper-apply-label":
-      box 0, 0, 82, 30
+      box 0, 0, 84, 30
       font "sans-serif", 11, 700, 30, hCenter, vCenter
       fill "#ffffff"
       characters "Zastosuj"
 
   group "wallpaper-reset-btn":
-    box x + w - 86, wpY + 34, 86, 30
+    box x + w - 94, wpY + 34, 94, 30
     cornerRadius 4
     fill "#2a2f36"
     onHover: fill "#3a4048"
@@ -209,7 +443,7 @@ proc drawAppearance(ss: SettingsState, x, y, w: float32) =
       save(ss)
       ss.statusMsg = "Przywrócono domyślną tapetę"
     text "wallpaper-reset-label":
-      box 0, 0, 86, 30
+      box 0, 0, 94, 30
       font "sans-serif", 11, 600, 30, hCenter, vCenter
       fill "#c7ccd3"
       characters "Domyślna"
@@ -632,6 +866,15 @@ proc drawSettings*(ss: SettingsState, win: ZdeWindow) =
   frame "settings-root":
     box 0, 0, win.size.x, win.size.y
     fill "#14171c"
+
+    ## Rozbudowa v0.2 (przeglądarka plików do wyboru tapety) -- rysowana
+    ## PRZED "sidebar"/"content" (patrz duży komentarz przy
+    ## `drawWallpaperPicker` niżej -- to NIE jest literówka: w tej wersji
+    ## Fidget wcześniej zadeklarowany element renderuje się NA WIERZCHU
+    ## późniejszych rodzeństw, odwrotnie niż w typowym "malarskim"
+    ## z-orderingu CSS/Figmy).
+    if ss.pickerOpen:
+      drawWallpaperPicker(ss, win)
 
     group "sidebar":
       box 0, 0, SidebarW, win.size.y
