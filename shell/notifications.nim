@@ -1,6 +1,7 @@
 import std/[times, sequtils, os, json, strutils]
 import fidget
 import sound
+import dbusnotify
 
 ## Uwaga o zależnościach: ten moduł CELOWO nie importuje `state.nim` (mimo
 ## że mógłby stamtąd wziąć np. `PanelBg`/`AccentColor` do spójnego
@@ -238,6 +239,24 @@ proc tickNotifications*() =
   ## potrzebują dokładności co do klatki).
   let now = epochTime()
   notifications.keepItIf(now - it.createdAt < lifetimeFor(it.kind))
+
+proc tickDbusNotifications*() =
+  ## **Runda 34/35** -- odpytuje serwer DBus `org.freedesktop.
+  ## Notifications` (patrz `shell/dbusnotify.nim`/`dbus_notify_shim.c`
+  ## po pełny opis) i każde odebrane powiadomienie od zewnętrznej
+  ## aplikacji przepuszcza przez ten sam `notify()`, którego używają
+  ## aplikacje ZDE -- efekt: powiadomienie z zewnątrz wygląda i brzmi
+  ## DOKŁADNIE tak samo jak powiadomienie wewnętrzne (`nkInfo`), trafia
+  ## do tej samej historii/centrum powiadomień. Drenuje CAŁĄ kolejkę w
+  ## jednym wywołaniu (pętla `while`), nie tylko jedno powiadomienie na
+  ## sekundę -- inaczej seria kilku powiadomień z rzędu (typowe np. przy
+  ## aktualizacji systemu) czekałaby w kolejce po jednym na sekundę,
+  ## myląco wolno jak na coś, co w rzeczywistości przyszło naraz.
+  while true:
+    let r = pollDbusNotification()
+    if not r.got: break
+    let title = if r.app.len > 0: r.app & ": " & r.summary else: r.summary
+    notify(title, r.body, nkInfo)
 
 proc accentFor*(kind: NotifyKind): string =
   case kind
