@@ -68,10 +68,31 @@ proc drawWindowChrome*(win: ZdeWindow) =
         cornerRadius 3
 
       text "title":
-        box 24, 0, win.size.x - 124, TitlebarH
+        box 24, 0, win.size.x - 154, TitlebarH
         font "sans-serif", 12, 600, TitlebarH, hLeft, vCenter
         fill (if isFocused: TextPrimary else: TextMuted)
         characters win.title
+
+      ## Rozbudowa (runda 32, "przypnij na wierzchu"): przycisk "📌" --
+      ## umieszczony PRZED (na lewo od) minimalizacji, żeby pozycje
+      ## min/max/zamknij zostały NIETKNIĘTE (ten sam trik co przy
+      ## dodawaniu ".*" w pasku Znajdź edytora w rundzie 14 -- zwężone
+      ## pole tekstowe obok, nie przesunięte istniejące przyciski).
+      ## Dostępny dla KAŻDEGO okna, niezależnie od `resizable`/`closable`
+      ## -- przypinanie to inna oś niż zmiana rozmiaru/zamykanie, nie ma
+      ## powodu ich ze sobą wiązać.
+      group "btn-pin":
+        box win.size.x - 120, 4, 26, TitlebarH - 8
+        cornerRadius RadiusSm
+        fill (if win.alwaysOnTop: AccentColor else: "#2c333c")
+        onHover:
+          if not win.alwaysOnTop: fill "#3a424d"
+        onClick: compositor.toggleAlwaysOnTop(win.id)
+        text "pin-label":
+          box 0, 0, 26, TitlebarH - 8
+          font "sans-serif", 12, 700, TitlebarH - 8, hCenter, vCenter
+          fill (if win.alwaysOnTop: "#ffffff" else: TextPrimary)
+          characters "📌"
 
       # przycisk minimalizacji
       group "btn-min":
