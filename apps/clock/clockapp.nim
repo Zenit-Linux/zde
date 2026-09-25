@@ -56,11 +56,21 @@ type
     timerTotalSec: int         ## ustawiony czas w sekundach (edytowalny gdy timerIdle/timerDone)
     timerRemainingSec: int
     timerPhase: TimerPhase
+    ## Rozbudowa v0.2 (wybór dźwięku minutnika): do tej rundy minutnik
+    ## ZAWSZE odtwarzał `playAlarmSound()` bez argumentu (pierwszy
+    ## dostępny dźwięk -- "Auto") -- README (sekcja "Ograniczenia")
+    ## jawnie to wymieniało: "minutnik nadal zawsze używa dźwięku Auto".
+    ## Ten sam wzorzec co `newSoundIdx` dla alarmów -- indeks w
+    ## `availableAlarmSounds()`, `-1` = "Auto" -- ale osobne pole, bo
+    ## minutnik to jeden, stały byt (nie lista jak alarmy), więc nie
+    ## potrzebuje osobnego "kreatora": wybór dotyczy WPROST bieżącego
+    ## minutnika, nie jakiegoś przyszłego wpisu dodawanego do listy.
+    timerSoundIdx: int
 
 proc newClockState*(): ClockState =
   ClockState(
     tab: tabDial, alarms: @[], nextAlarmId: 1, newHour: 7, newMinute: 0, newSoundIdx: -1,
-    timerTotalSec: 5 * 60, timerRemainingSec: 5 * 60, timerPhase: timerIdle,
+    timerTotalSec: 5 * 60, timerRemainingSec: 5 * 60, timerPhase: timerIdle, timerSoundIdx: -1,
   )
 
 proc tickClock*(cs: ClockState) =
@@ -82,7 +92,14 @@ proc tickClock*(cs: ClockState) =
       cs.timerRemainingSec = 0
       cs.timerPhase = timerDone
       notify("Minutnik", "Czas minął", nkAlarm)
-      playAlarmSound()
+      ## Rozbudowa v0.2: użyj wybranego dźwięku minutnika
+      ## (`cs.timerSoundIdx`), nie zawsze "Auto" -- ten sam wzorzec co
+      ## `playAlarmSound(a.soundPath)` dla alarmów wyżej.
+      let sounds = availableAlarmSounds()
+      let chosenSound = if cs.timerSoundIdx >= 0 and cs.timerSoundIdx < sounds.len:
+                           sounds[cs.timerSoundIdx]
+                         else: ""
+      playAlarmSound(chosenSound)
     else:
       dec cs.timerRemainingSec
 
@@ -464,7 +481,32 @@ proc drawTimerSection(cs: ClockState, x, y, w: float32) =
     fill (if cs.timerPhase == timerDone: "#e5666b" else: "#e8ecf0")
     characters formatDuration(cs.timerRemainingSec)
 
-  let controlsY = y + 66
+  ## Rozbudowa v0.2 (wybór dźwięku minutnika): ten sam widget co
+  ## "alarm-sound-picker" w `drawAlarmsList` -- pojedynczy przycisk,
+  ## klik CYKLUJE po kolejnych dostępnych dźwiękach, "Auto" jako
+  ## pierwsza pozycja (`-1`). Zawsze widoczny (nie tylko gdy
+  ## `timerIdle`/`timerDone`) -- zmiana dźwięku w trakcie odliczania jest
+  ## nieszkodliwa (dźwięk gra dopiero na końcu), więc nie ma powodu, żeby
+  ## chować picker akurat wtedy.
+  let sounds = availableAlarmSounds()
+  group "timer-sound-picker":
+    box x, y + 64, w, 18
+    cornerRadius 4
+    fill "#20262d"
+    onHover: fill "#262d35"
+    onClick:
+      if sounds.len > 0:
+        cs.timerSoundIdx = (cs.timerSoundIdx + 2) mod (sounds.len + 1) - 1
+    text "timer-sound-label":
+      box 8, 0, w - 16, 18
+      font "sans-serif", 9, 600, 18, hLeft, vCenter
+      fill (if sounds.len == 0: "#5b6470" else: "#aeb6c2")
+      characters "🔔 " & (
+        if sounds.len == 0: "Auto (brak dźwięków w systemie)"
+        elif cs.timerSoundIdx < 0: "Auto"
+        else: soundLabel(sounds[cs.timerSoundIdx]))
+
+  let controlsY = y + 86
   case cs.timerPhase
   of timerIdle, timerDone:
     # presety czasu (widoczne tylko, gdy minutnik nie chodzi) + start
