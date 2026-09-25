@@ -3,6 +3,7 @@ import fidget
 import fidget/opengl/base as fidgetBase  # dla MainLoopMode (nie re-eksportowane przez `fidget`)
 import ../comp/comp
 import ../apps/session/session
+import ../apps/filemanager/files
 import waylandlink
 import state
 import wallpaper
@@ -17,6 +18,8 @@ proc dispatchShortcut(a: ShortcutAction) =
   case a
   of actToggleLauncher: compositor.launcherOpen = not compositor.launcherOpen
   of actCycleFocus: compositor.cycleFocus()
+  of actCycleFocusPrev: compositor.cycleFocus(reverse = true)
+  of actToggleShowDesktop: compositor.toggleShowDesktop()
   of actOpenTerminal: launchTerminal()
   of actOpenFileManager: launchFileManager()
   of actOpenEditor: launchTextEditor()
@@ -32,6 +35,18 @@ proc dispatchShortcut(a: ShortcutAction) =
   of actSnapRight:
     let w = compositor.focusedWindow()
     if w != nil: compositor.snapWindow(w.id, seRight)
+  of actSnapUp:
+    ## Rozbudowa (runda 21): jeśli okno jest już przyciągnięte do
+    ## lewej/prawej, `snapWindow`/`combinedEdge` (`comp/window.nim`)
+    ## SAME doprecyzowują to do ćwiartki -- tutaj zawsze przekazujemy
+    ## `seTop`, niezależnie od bieżącego stanu okna, cała logika
+    ## "połowa czy ćwiartka" żyje w jednym miejscu (`comp/window.nim`),
+    ## nie jest duplikowana tutaj.
+    let w = compositor.focusedWindow()
+    if w != nil: compositor.snapWindow(w.id, seTop)
+  of actSnapDown:
+    let w = compositor.focusedWindow()
+    if w != nil: compositor.snapWindow(w.id, seBottom)
   of actWorkspaceNext:
     ## Zawija się (4 -> 1), nie zatrzymuje na krawędzi -- ten sam
     ## mechanizm co karuzela Alt+Tab okien w `wlcomp/toplevel.nim`.
@@ -122,6 +137,11 @@ proc drawMain() =
   # w `shell/taskbar.nim`.
   updateSliderDrag()
 
+  # -- globalna obsługa przeciągania plików/folderów myszą (rozbudowa) --
+  # znów ten sam wzorzec -- patrz `FileDragState`/`updateFileDrag` w
+  # `apps/filemanager/files.nim`.
+  updateFileDrag()
+
   # -- Skróty klawiszowe (konfigurowalne, patrz shortcuts.nim + Ustawienia) -
   # Escape zamykający launcher zostaje zaszyty na sztywno -- to zachowanie
   # UI (jak w każdym menu), nie "skrót" w sensie akcji do przypisania.
@@ -155,6 +175,9 @@ proc tickMain() =
       checkExternalChanges(es)
     # Sprzątanie wygasłych toastów -- patrz `notifications.nim`.
     tickNotifications()
+    # Runda 34/35 -- powiadomienia od aplikacji SPOZA ZDE przez DBus,
+    # patrz `tickDbusNotifications` w `notifications.nim`.
+    tickDbusNotifications()
     # Żywe wykrywanie nowo zainstalowanych/usuniętych aplikacji systemowych
     # w launcherze (rozbudowa) -- patrz `rescanSystemAppsIfChanged` w
     # `shell/taskbar.nim` i `appDirsSignature` w `shell/desktopapps.nim`.
