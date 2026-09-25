@@ -520,10 +520,87 @@
         (string wlcomp-dir "/main.nim")])
   (log "-> " dist "/zde-comp"))
 
+(defn find-nimble-pkg-dir [prefix]
+  "Zwraca ścieżkę do zainstalowanej paczki nimble, której nazwa katalogu
+   zaczyna się od `prefix` (np. \"fidget-\") -- jeśli jest ich kilka (stare
+   wersje pozostałe po wcześniejszych instalacjach), wybiera najnowszą tym
+   samym sortowaniem wersyjnym (sort -V), którego build.janet używa już
+   gdzie indziej. Zwraca nil, jeśli nic nie znaleziono."
+  (def matches @[])
+  (each pkgs-dir (nimble-pkgs-dirs)
+    (each entry (os/dir pkgs-dir)
+      (when (string/has-prefix? prefix entry)
+        (array/push matches (string pkgs-dir "/" entry)))))
+  (cond
+    (empty? matches) nil
+    (= (length matches) 1) (matches 0)
+    true
+    (do
+      (def tmp-file (string "/tmp/.zde-build-janet-find-pkg-" (os/getpid) ".txt"))
+      (spit tmp-file (string/join matches "\n"))
+      (def out (capture-shell (string "sort -V " tmp-file " | tail -1")))
+      (try (os/rm tmp-file) ([_] nil))
+      (if (empty? out) (matches 0) out))))
+
+(defn patch-file-if-contains [path old new what]
+  "Jeśli plik `path` istnieje i zawiera dokładnie tekst `old`, podmienia go
+   (przez sed, w miejscu) na `new`. Idempotentne: jeśli `old` już nie ma
+   w pliku (bo build.janet już go wcześniej załatał, albo nowsza wersja
+   paczki ma to poprawione), nic nie robi -- więc bezpieczne do wołania
+   przy każdym buildzie, tak jak reszta ensure-*/check-* powyżej."
+  (if-not (os/stat path)
+    (log "  (pomijam łatanie " what " -- brak pliku " path ")")
+    (if (= 0 (os/execute ["grep" "-qF" old path] :p))
+      (do
+        (log "łatam " what " w " path " ...")
+        (run ["sed" "-i" (string "s/" old "/" new "/") path]))
+      (log "OK: " what " -- już poprawne w " path " (albo inna wersja pliku)."))))
+
+## Runda -- fidget (>= 0.7.10, także wersja z brancha master na dzień
+## pisania tej poprawki) rejestruje w src/fidget/opengl/base.nim callbacki
+## GLFW `onResize` i `onScroll` zadeklarowane z GOŁYMI typami Nima
+## (`int32`, `float64`) zamiast typów C, których oczekuje staticglfw
+## (`cint`, `cdouble` -- patrz `FrameBufferSizeFun`/`ScrollFun` w
+## staticglfw.nim). Na starszych Nimach (<= 1.6) `cint` bywał przezroczystym
+## aliasem `int32`, więc to przechodziło -- ale od Nim 2.x te typy są
+## rozróżniane przy dopasowywaniu typów proc, co daje twardy
+## `Error: type mismatch` przy `window.setFramebufferSizeCallback(onResize)`
+## (dokładnie to, co widać w buildzie: base.nim(385, 17)) -- potwierdzone
+## reprodukcją: identyczny kod kompiluje się pod Nim 1.6.14, a pod Nim
+## 2.3.1 daje dokładnie ten błąd; zamiana `int32`/`float64` na `cint`/
+## `cdouble` w tych dwóch sygnaturach naprawia to pod obiema wersjami.
+## Błąd leży w KODZIE FIDGETA, nie w naszym build.janet/zde.nimble --
+## jedyny sposób, żeby build przechodził bez ręcznej ingerencji użytkownika
+## w cache nimble za każdym razem (i żeby to przetrwało świeży
+## `nimble install` na innej maszynie), to załatać ten fragment tu,
+## automatycznie, PO każdym `ensure-nimble-deps` -- idempotentnie, patrz
+## `patch-file-if-contains` wyżej.
+(defn patch-fidget-glfw-callbacks []
+  (def fidget-dir (find-nimble-pkg-dir "fidget-"))
+  (unless fidget-dir
+    (die "nie znaleziono zainstalowanej paczki nimble `fidget` do załatania (patrz patch-fidget-glfw-callbacks)."))
+  (def direct (string fidget-dir "/src/fidget/opengl/base.nim"))
+  (def flat (string fidget-dir "/fidget/opengl/base.nim"))
+  (def base-nim (if (os/stat direct) direct flat))
+  (patch-file-if-contains base-nim
+    "proc onResize(handle: staticglfw.Window, w, h: int32) {.cdecl.} ="
+    "proc onResize(handle: staticglfw.Window, w, h: cint) {.cdecl.} ="
+    "sygnaturę onResize (setFramebufferSizeCallback, niezgodność cint/int32 pod Nim 2.x)")
+  (patch-file-if-contains base-nim
+    "proc onScroll(window: staticglfw.Window, xoffset, yoffset: float64) {.cdecl.} ="
+    "proc onScroll(window: staticglfw.Window, xoffset, yoffset: cdouble) {.cdecl.} ="
+    "sygnaturę onScroll (setScrollCallback, niezgodność cdouble/float64 pod Nim 2.x)"))
+
 (defn build-shell [backend]
   # backend: :wayland albo :x11
   (log "buduję zde-shell (backend: " backend ")...")
   (ensure-nimble-deps)
+  # Patrz duży komentarz przy patch-fidget-glfw-callbacks: naprawia
+  # niezgodność typów cint/int32 (i cdouble/float64) w callbackach GLFW
+  # zarejestrowanych przez fidget -- MUSI wykonać się po ensure-nimble-deps
+  # (żeby paczka na pewno już była zainstalowana) i PRZED wywołaniem nima
+  # niżej.
+  (patch-fidget-glfw-callbacks)
   # X11/GLFW linkuje się bezwarunkowo (patrz komentarz w check-shell-common-deps)
   # -- sprawdzamy to NIEZALEŻNIE od wybranego backendu, nie tylko dla :x11.
   (check-shell-common-deps)
