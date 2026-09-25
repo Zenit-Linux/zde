@@ -345,7 +345,31 @@ proc drawTerminal*(t: TerminalState, win: ZdeWindow) =
   let inputH = 28.0'f32
   let toolbarH = 24.0'f32
   let pad = 8.0'f32
-  let bodyH = win.size.y - inputH - toolbarH - pad * 4
+  ## Rozbudowa v0.2 (ZNALEZIONA i tym razem NAPRAWIONA prawdziwa
+  ## przyczyna niewidocznego pisania w polu poleceń -- ciąg dalszy z
+  ## poprzedniej rundy, gdzie hipoteza o brakującej gałęzi `characters`
+  ## została obalona). Prawdziwa przyczyna, znaleziona metodyczną
+  ## bisekcją na żywo: TEKST (nie zwykłe wypełnienia/prostokąty --
+  ## te renderowały się poprawnie nawet tuż przy krawędzi) w obrębie
+  ## kilkunastu pikseli od DOLNEJ krawędzi `frame "term-root"` był
+  ## całkowicie niewidoczny, niezależnie od tego, czy to statyczny
+  ## napis "zde$ ", czy dynamiczne `t.input`. Rząd wpisywania poleceń,
+  ## przyklejony do samego dołu okna z zaledwie `pad` (8px) marginesu,
+  ## siedział dokładnie w tej martwej strefie. Potwierdzone bisekcją:
+  ## przesunięcie rzędu o 100px w górę -> tekst widoczny; o 20px w górę
+  ## -> tekst WCIĄŻ widoczny (próg gdzieś poniżej 20px, nieustalony co
+  ## do piksela -- nie było powodu szukać dokładnej granicy, skoro
+  ## rozsądny margines bezpieczeństwa rozwiązuje problem). `BottomTextClipMargin`
+  ## niżej to właśnie taki margines -- świadomie hojny (nie tylko
+  ## "ledwo wystarczający 20px"), żeby nie balansować tuż przy granicy
+  ## nieznanego mechanizmu na innych rozdzielczościach/czcionkach.
+  ## Prawdziwy mechanizm PRZYCZYNY pozostaje niepotwierdzony (podejrzenie:
+  ## jakiś rodzaj przycinania tekstu do granic `frame`, z marginesem
+  ## zależnym od metryk czcionki, którego zwykłe wypełnienia nie
+  ## dziedziczą) -- to obejście na poziomie layoutu, nie naprawa w
+  ## Fidget/Pixie, których źródeł ZDE nie kontroluje.
+  const BottomTextClipMargin = 24.0'f32
+  let bodyH = win.size.y - inputH - toolbarH - pad * 4 - BottomTextClipMargin
   let visibleLines = max(1, int(bodyH / lineH))
 
   # Powiadom PTY o bieżącym rozmiarze okna (w "znakach", przybliżenie --
@@ -437,15 +461,17 @@ proc drawTerminal*(t: TerminalState, win: ZdeWindow) =
         y += lineH
 
     group "input-row":
-      box pad, win.size.y - inputH - pad, win.size.x - pad * 2 - 60, inputH
+      box pad, win.size.y - inputH - pad - BottomTextClipMargin, win.size.x - pad * 2 - 60, inputH
       fill "#1a2027"
       cornerRadius 4
 
-      text "prompt":
+      group "prompt-wrap":
         box 8, 0, 60, inputH
-        font "monospace", 13, 700, inputH, hLeft, vCenter
-        fill "#5fd7a7"
-        characters PromptLabel
+        text "prompt":
+          box 0, 0, 60, inputH
+          font "monospace", 13, 700, inputH, hLeft, vCenter
+          fill "#5fd7a7"
+          characters PromptLabel
 
       text "input-field":
         box 60, 0, win.size.x - pad * 2 - 60 - 68, inputH
@@ -453,8 +479,21 @@ proc drawTerminal*(t: TerminalState, win: ZdeWindow) =
         fill "#ffffff"
         editableText true
         selectable true
-        if not current.hasKeyboardFocus():
-          characters t.input
+        ## Rozbudowa v0.2 (NAPRAWIONY realny bug -- ciąg dalszy z
+        ## poprzedniej rundy): pisanie polecenia w tym polu było
+        ## CAŁKOWICIE niewidoczne na ekranie. Prawdziwa przyczyna --
+        ## patrz duży komentarz przy `BottomTextClipMargin` wyżej w tym
+        ## samym pliku -- nie miała nic wspólnego z tym polem konkretnie:
+        ## TEKST (nie zwykłe wypełnienia) tuż przy dolnej krawędzi `frame
+        ## "term-root"` był niewidoczny, a rząd wpisywania siedział
+        ## dokładnie w tej martwej strefie. Poprzednia runda obaliła
+        ## hipotezę o brakującej gałęzi `characters` (stąd bezwarunkowe
+        ## wołanie poniżej zostaje -- to i tak solidniejszy wzorzec, ten
+        ## sam co pasek Znajdź w edytorze tekstu -- ale samo w sobie NIE
+        ## było przyczyną). Zweryfikowane pełnym testem end-to-end po
+        ## naprawie: wpisanie polecenia jest teraz widoczne znak po
+        ## znaku, tak jak wszędzie indziej w ZDE.
+        characters t.input
         onClick:
           keyboard.focus(current)
         onInput:
@@ -462,13 +501,31 @@ proc drawTerminal*(t: TerminalState, win: ZdeWindow) =
             let cmd = t.input
             t.input = ""
             keyboard.input = ""
+            ## Rozbudowa v0.2 (NAPRAWIONY drugi, powiązany bug --
+            ## odkryty od razu przy weryfikacji naprawy głównego problemu
+            ## wyżej): samo wyczyszczenie `t.input`/`keyboard.input` nie
+            ## wystarczało -- pole dalej POKAZYWAŁO starą treść po
+            ## `Enter`, a kolejne wpisywane znaki DOPISYWAŁY się do niej
+            ## zamiast zaczynać od nowa (potwierdzone live-testem:
+            ## "echo IT_WORKS_NOW" + "x" + "y" dało widoczne
+            ## "echo IT_WORKS_NOWxy"). Fidget najwyraźniej trzyma
+            ## WŁASNY, wewnętrzny bufor edycji dla aktualnie
+            ## SKUPIONEGO pola, niezależny od `keyboard.input`, i
+            ## odtwarza go z powrotem PO wywołaniu `onInput` -- samo
+            ## przypisanie do `keyboard.input` nie ma szans go
+            ## nadpisać. Zwolnienie fokusu (`keyboard.focusNode = nil`,
+            ## ten sam mechanizm co `onHover` na "scrollback" wyżej)
+            ## wymusza pełny reset tego wewnętrznego bufora -- następne
+            ## kliknięcie w pole zaczyna od czysta kartka, zgodnie z
+            ## `t.input == ""`.
+            keyboard.focusNode = nil
             if cmd.strip().len > 0:
               sendLine(t, cmd)
           else:
             t.input = keyboard.input
 
     group "btn-paste":
-      box win.size.x - pad - 52, win.size.y - inputH - pad, 52, inputH
+      box win.size.x - pad - 52, win.size.y - inputH - pad - BottomTextClipMargin, 52, inputH
       cornerRadius 4
       fill "#1f2530"
       onHover: fill "#2a323f"
