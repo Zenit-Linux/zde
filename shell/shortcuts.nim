@@ -6,6 +6,12 @@ type
   ShortcutAction* = enum
     actToggleLauncher
     actCycleFocus
+    ## Rozbudowa (runda 23): cykl WSTECZ (Shift+Alt+Tab) -- domyka realny
+    ## brak, patrz duży komentarz przy `cycleFocus*` w `comp/window.nim`.
+    actCycleFocusPrev
+    ## Rozbudowa (runda 28): "Pokaż pulpit" -- domyka realny brak, patrz
+    ## duży komentarz przy `toggleShowDesktop*` w `comp/window.nim`.
+    actToggleShowDesktop
     actOpenTerminal
     actOpenFileManager
     actOpenEditor
@@ -16,6 +22,10 @@ type
     ## Rozbudowa v0.1 ("Aurora"): przyciąganie okna do połowy ekranu.
     actSnapLeft
     actSnapRight
+    ## Rozbudowa (runda 21): góra/dół -- w połączeniu z lewo/prawo dają
+    ## ćwiartki (patrz `combinedEdge` w `comp/window.nim`).
+    actSnapUp
+    actSnapDown
     ## Rozbudowa v0.1 ("Aurora" -- pulpity wirtualne).
     actWorkspaceNext
     actWorkspacePrev
@@ -28,23 +38,28 @@ type
 
 const
   ActionNames*: array[ShortcutAction, string] = [
-    "toggleLauncher", "cycleFocus", "openTerminal", "openFileManager",
+    "toggleLauncher", "cycleFocus", "cycleFocusPrev", "toggleShowDesktop", "openTerminal", "openFileManager",
     "openEditor", "openSettings", "closeWindow", "lockScreen", "logout",
-    "snapLeft", "snapRight", "workspaceNext", "workspacePrev",
+    "snapLeft", "snapRight", "snapUp", "snapDown", "workspaceNext", "workspacePrev",
     "moveWindowNext", "moveWindowPrev",
   ]
   ActionLabels*: array[ShortcutAction, string] = [
-    "Otwórz/zamknij launcher", "Przełącz między oknami", "Otwórz terminal",
+    "Otwórz/zamknij launcher", "Przełącz między oknami",
+    "Przełącz między oknami (wstecz)", "Pokaż pulpit (minimalizuj/przywróć wszystkie okna)",
+    "Otwórz terminal",
     "Otwórz menedżer plików", "Otwórz edytor tekstu", "Otwórz ustawienia",
     "Zamknij aktywne okno", "Zablokuj ekran", "Wyloguj",
     "Przyciągnij okno do lewej połowy", "Przyciągnij okno do prawej połowy",
+    "Przyciągnij okno do górnej połowy (albo doprecyzuj do ćwiartki)",
+    "Przyciągnij okno do dolnej połowy (albo doprecyzuj do ćwiartki)",
     "Następny pulpit", "Poprzedni pulpit",
     "Przenieś okno na następny pulpit", "Przenieś okno na poprzedni pulpit",
   ]
   DefaultCombos*: array[ShortcutAction, string] = [
-    "super+space", "alt+tab", "ctrl+alt+t", "ctrl+alt+e", "ctrl+alt+n",
+    "super+space", "alt+tab", "shift+alt+tab", "super+d", "ctrl+alt+t", "ctrl+alt+e", "ctrl+alt+n",
     "ctrl+alt+s", "ctrl+alt+q", "ctrl+alt+l", "ctrl+alt+shift+q",
-    "super+left", "super+right", "ctrl+alt+right", "ctrl+alt+left",
+    "super+left", "super+right", "super+up", "super+down",
+    "ctrl+alt+right", "ctrl+alt+left",
     "ctrl+alt+shift+right", "ctrl+alt+shift+left",
   ]
 
