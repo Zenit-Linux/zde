@@ -1,4 +1,4 @@
-import std/[os, hashes, times, algorithm]
+import std/[os, hashes, times, algorithm, osproc, strutils]
 import fidget
 import pixie
 import state
@@ -86,7 +86,7 @@ proc drawGradientWallpaper() =
       box 0, 22, 400, 18
       font "sans-serif", 11, 400, 18, hLeft, vTop
       fill TextFaint
-      characters "ZDE -- środowisko graficzne v0.1"
+      characters "ZDE -- środowisko graficzne v0.2"
 
 proc wallpaperCacheDir(): string =
   let base =
@@ -194,6 +194,45 @@ var
   lastAttemptedWallpaper = ("", 0, 0)
   lastAttemptSucceeded = false
 
+proc readImageWithWebpFallback(srcPath: string): Image =
+  ## **Runda 34/35** -- domknięcie jawnie wypisanego ograniczenia "WebP
+  ## nieobsługiwane w ogóle" (Pixie 5.0.7 nie ma dekodera WebP i to się
+  ## NIE zmieniło -- to wciąż prawda, patrz niżej). Zamiast czekać na
+  ## dekoder WebP w samym Pixie, dla plików `.webp` wołamy `dwebp`
+  ## (pakiet `webp`/`libwebp-tools`, ten sam styl zewnętrznego narzędzia
+  ## co `wl-copy`/`xclip` gdzie indziej w ZDE) do przekonwertowania na
+  ## tymczasowy PNG, który Pixie już normalnie umie wczytać -- efekt dla
+  ## użytkownika jest taki sam, jakby Pixie samo obsługiwało WebP, mimo
+  ## że w rzeczywistości robi to zewnętrzny konwerter.
+  ##
+  ## Best-effort: gdy `dwebp` nie jest zainstalowane (typowe -- pakiet
+  ## `webp`/`libwebp-tools` NIE jest domyślnie obecny w większości
+  ## dystrybucji), po prostu PADA błędem tak jak wcześniej (Pixie samo
+  ## rzuci wyjątek przy próbie wczytania WebP jako czegoś innego) --
+  ## `ensureWallpaperCache` i tak to łapie i cofa się do wbudowanego
+  ## gradientu, dokładnie tak samo jak przy każdym innym nieobsługiwanym
+  ## pliku. Plik tymczasowy jest tworzony w katalogu cache tapet (nie
+  ## `/tmp` systemowym) i USUWANY zaraz po wczytaniu, niezależnie od
+  ## powodzenia (`try`/`finally`) -- żeby nie zostawiać śmieci przy
+  ## każdej zmianie tapety.
+  if not srcPath.toLowerAscii().endsWith(".webp"):
+    return readImage(srcPath)
+  let dwebp = findExe("dwebp")
+  if dwebp.len == 0:
+    return readImage(srcPath)  ## brak narzędzia -- Pixie samo rzuci błąd, obsłużony wyżej w `ensureWallpaperCache`
+  let tmpPng = wallpaperCacheDir() / ("webp-tmp-" & $hash(srcPath) & ".png")
+  try:
+    createDir(tmpPng.parentDir())
+    let res = execProcess(dwebp, args = @[srcPath, "-o", tmpPng], options = {poUsePath, poStdErrToStdOut})
+    discard res  ## log diagnostyczny `dwebp` nam tu niepotrzebny -- sukces/porażka i tak poznamy po `fileExists` niżej
+    if not fileExists(tmpPng):
+      raise newException(IOError, "dwebp nie wyprodukowało pliku wyjściowego dla " & srcPath)
+    result = readImage(tmpPng)
+  finally:
+    if fileExists(tmpPng):
+      try: removeFile(tmpPng)
+      except OSError: discard
+
 proc ensureWallpaperCache*(srcPath: string, w, h: int): string =
   ## Zwraca ścieżkę do gotowego, przetworzonego pliku cache, albo "",
   ## gdy się nie da (zły plik, błąd zapisu...). Best-effort, jak reszta
@@ -218,7 +257,7 @@ proc ensureWallpaperCache*(srcPath: string, w, h: int): string =
   lastAttemptedWallpaper = key
 
   try:
-    let src = readImage(srcPath)
+    let src = readImageWithWebpFallback(srcPath)
     let final = coverResize(src, w, h)
     createDir(cachePath.parentDir())
     final.writeFile(cachePath)
