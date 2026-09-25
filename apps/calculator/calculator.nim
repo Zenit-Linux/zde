@@ -26,7 +26,17 @@ proc trimZeros(s: string): string =
 
 proc formatNumber(x: float64): string =
   if x == x.trunc and abs(x) < 1e15:
-    result = &"{x:.0f}"
+    ## Rozbudowa v0.2 (odkryte podczas testowania klawiatury fizycznej,
+    ## NIE związane z samą klawiaturą -- ten sam błąd występował już
+    ## wcześniej przy kliknięciu myszą w "=", po prostu nikt wcześniej
+    ## nie przetestował rzeczywistego działania na tyle dokładnie, żeby
+    ## to zauważyć): `&"{x:.0f}"` w tej wersji Nim/strformat zostawia
+    ## KROPKĘ na końcu nawet przy zerze miejsc po przecinku (`4.0` →
+    ## `"4."`, nie `"4"`) -- potwierdzone bezpośrednim testem
+    ## izolowanym. `.strip(chars = {'.'})` usuwa ją bezpiecznie z OBU
+    ## stron (liczby ujemne jak "-12." nie mają kropki na początku, więc
+    ## nie ma ryzyka obcięcia czegoś innego).
+    result = (&"{x:.0f}").strip(chars = {'.'})
   else:
     let raw = &"{x:.8f}"
     result = raw.trimZeros().strip(chars = {'.'})
@@ -99,7 +109,70 @@ proc percent(cs: CalculatorState) =
   if cs.display.startsWith("Błąd"): return
   cs.display = formatNumber(cs.currentValue() / 100.0)
 
+## Rozbudowa v0.2 (klawiatura fizyczna): dotąd kalkulator w OGÓLE nie
+## obsługiwał klawiatury -- jedynym sposobem interakcji było klikanie
+## przycisków myszą (`grep buttonPress apps/calculator/calculator.nim`
+## przed tą rundą nie dawało ŻADNEGO wyniku). To był realny, dotkliwy
+## brak: każdy inny kalkulator na pulpicie (GNOME, KDE, macOS, Windows)
+## przyjmuje wpisywanie z klawiatury jako podstawowy sposób obsługi, nie
+## dodatek. `backspace` to NOWA operacja, bez odpowiednika wśród
+## przycisków myszą -- kasuje OSTATNIĄ cyfrę (w przeciwieństwie do "C",
+## które czyści WSZYSTKO), dokładnie tak jak Backspace działa w każdym
+## innym polu tekstowym w ZDE.
+proc backspace(cs: CalculatorState) =
+  if cs.display.startsWith("Błąd"):
+    cs.display = "0"
+    cs.freshEntry = true
+    return
+  if cs.freshEntry: return  ## nic nie zaczęto wpisywać -- nie ma czego kasować
+  if cs.display.len <= 1 or (cs.display.len == 2 and cs.display[0] == '-'):
+    cs.display = "0"
+    cs.freshEntry = true
+  else:
+    cs.display = cs.display[0 ..< ^1]
+
 proc drawCalculator*(cs: CalculatorState, win: ZdeWindow) =
+  ## Rozbudowa v0.2 (klawiatura fizyczna, patrz duży komentarz przy
+  ## `backspace` wyżej): tylko gdy TO okno jest aktywne (`win.focused`,
+  ## ten sam sprawdzony wzorzec co Ctrl+F w `apps/texteditor/texteditor.nim`
+  ## -- bez tego wpisywanie cyfr wpływałoby na WSZYSTKIE otwarte okna
+  ## kalkulatora naraz, nie tylko na to, na które faktycznie patrzy
+  ## użytkownik). Obsługuje zarówno górny rząd cyfr, jak i klawiaturę
+  ## numeryczną (`NUMBER_*`/`KP_*`) -- to dwa fizycznie różne zestawy
+  ## klawiszy na większości klawiatur, więc oba warte wsparcia równolegle,
+  ## nie tylko jeden z nich.
+  if win.focused:
+    let shiftHeld = buttonDown[LEFT_SHIFT] or buttonDown[RIGHT_SHIFT]
+    if buttonPress[NUMBER_0] or buttonPress[KP_0]: inputDigit(cs, "0")
+    if buttonPress[NUMBER_1] or buttonPress[KP_1]: inputDigit(cs, "1")
+    if buttonPress[NUMBER_2] or buttonPress[KP_2]: inputDigit(cs, "2")
+    if buttonPress[NUMBER_3] or buttonPress[KP_3]: inputDigit(cs, "3")
+    if buttonPress[NUMBER_4] or buttonPress[KP_4]: inputDigit(cs, "4")
+    if buttonPress[NUMBER_5] or buttonPress[KP_5]:
+      ## Shift+5 = "%" na typowym układzie US -- ten sam symbol co na
+      ## klawiszu fizycznym, więc naturalny gest, nie coś do zapamiętania.
+      if shiftHeld: percent(cs)
+      else: inputDigit(cs, "5")
+    if buttonPress[NUMBER_6] or buttonPress[KP_6]: inputDigit(cs, "6")
+    if buttonPress[NUMBER_7] or buttonPress[KP_7]: inputDigit(cs, "7")
+    if buttonPress[NUMBER_8] or buttonPress[KP_8]: inputDigit(cs, "8")
+    if buttonPress[NUMBER_9] or buttonPress[KP_9]: inputDigit(cs, "9")
+    if buttonPress[PERIOD] or buttonPress[KP_DECIMAL]: inputDot(cs)
+    if buttonPress[MINUS] or buttonPress[KP_SUBTRACT]: setOp(cs, opSub)
+    if buttonPress[KP_MULTIPLY] or buttonPress[LETTER_X]: setOp(cs, opMul)
+    if buttonPress[SLASH] or buttonPress[KP_DIVIDE]: setOp(cs, opDiv)
+    if buttonPress[KP_ADD]: setOp(cs, opAdd)
+    ## Klawisz "=" bez Shift to "=" (policz), ze Shift to "+" (dodaj) --
+    ## dokładnie te dwa symbole widoczne fizycznie na TYM SAMYM klawiszu
+    ## typowej klawiatury US, więc to odwzorowanie 1:1, nie umowna
+    ## konwencja do zapamiętania.
+    if buttonPress[EQUAL]:
+      if shiftHeld: setOp(cs, opAdd)
+      else: equals(cs)
+    if buttonPress[ENTER] or buttonPress[KP_ENTER]: equals(cs)
+    if buttonPress[BACKSPACE]: backspace(cs)
+    if buttonPress[ESCAPE]: clearAll(cs)
+
   let dispH = 70.0'f32
   let pad = 6.0'f32
   let rows = 5
