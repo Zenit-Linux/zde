@@ -11,6 +11,26 @@ proc onRequestSetSelection*(listener: ptr WlListener, data: pointer) {.cdecl.} =
   let event = cast[ptr WlrSeatRequestSetSelectionEvent](data)
   wlrSeatSetSelection(server.seat, event.source, event.serial)
 
+## Rozbudowa v0.2 ("primary selection" -- schowek PIERWOTNY, środkowy
+## klik w stylu X11): do tej pory `zde-comp` w ogóle nie tworzył
+## `wlr_primary_selection_v1_device_manager` w `main()` -- protokół
+## `zwp_primary_selection_v1` nigdy nie trafiał do rejestru Waylanda,
+## więc żaden klient (terminal, GTK, Firefox...) nigdy nie oferował
+## schowka pierwotnego pod ZDE, mimo że ZAZNACZANIE tekstu myszą i tak
+## działało (to zwykłe zaznaczenie w obrębie klienta, niezależne od
+## protokołu) -- brakował tylko krok "wklej środkowym klikiem GDZIE
+## INDZIEJ". Ten handler to DOKŁADNA kopia `onRequestSetSelection`
+## wyżej, z jedynym realnym drugim krokiem: stworzeniem menedżera w
+## `main()` (patrz komentarz tam) -- oba typy zdarzeń (`wlr_seat_request_set_selection_event`
+## i `wlr_seat_request_set_primary_selection_event`) mają identyczny
+## kształt w nagłówkach wlroots (`source` + `serial`), więc nie ma tu
+## żadnej dodatkowej logiki do wymyślenia, tylko odbicie istniejącego
+## wzorca na drugi, równoległy protokół.
+proc onRequestSetPrimarySelection*(listener: ptr WlListener, data: pointer) {.cdecl.} =
+  let server = containerOf(listener, Server, ServerObj, requestSetPrimarySelectionL)
+  let event = cast[ptr WlrSeatRequestSetPrimarySelectionEvent](data)
+  wlrSeatSetPrimarySelection(server.seat, event.source, event.serial)
+
 proc onDragIconDestroy*(listener: ptr WlListener, data: pointer) {.cdecl.} =
   let server = containerOf(listener, Server, ServerObj, dragIconDestroyL)
   zdeListRemove(addr server.dragIconDestroyL.link)
