@@ -1,4 +1,4 @@
-import std/[os, posix]
+import std/[os, posix, osproc]
 import wlroots
 import types
 import output
@@ -20,6 +20,61 @@ import gestures
 ## `apps/settings/settings.nim`, `reloadCompositor()`.
 proc pidFilePath(): string =
   (if getEnv("XDG_RUNTIME_DIR", "").len > 0: getEnv("XDG_RUNTIME_DIR") else: "/tmp") / "zde-comp.pid"
+
+## Rozbudowa v0.2 (kompozytor -- autostart zde-shell): do tej pory
+## `zde-comp` NIGDY nie uruchamiał `zde-shell` samo z siebie -- trzeba
+## było ręcznie odpalić je z DRUGIEGO TTY ze wskazanym WAYLAND_DISPLAY
+## (patrz "Wariant A" w README, krok 5) -- README jawnie wymieniało to
+## jako TODO: "docelowo zde-comp powinien sam odpalać zde-shell jako
+## swój 'startup command' zamiast wymagać dwóch TTY". Ta para funkcji to
+## domknięcie tego TODO.
+proc findShellBinary(): string =
+  ## `ZDE_SHELL_PATH`, jeśli ustawione, ZAWSZE wygrywa -- przydatne przy
+  ## debugowaniu (np. wskazanie na wariant X11 zamiast Wayland, albo na
+  ## binarkę zbudowaną w innym katalogu). W przeciwnym razie szukamy
+  ## `zde-shell` W TYM SAMYM katalogu co uruchomiony binarny `zde-comp`
+  ## (`getAppDir()`) -- oba binarki lądują razem w `dist/` (patrz
+  ## `zde.nimble`/`build.janet`), więc to jedyne miejsce, o którym
+  ## `zde-comp` może z rozsądną pewnością założyć, że "prawdopodobnie
+  ## tam jest" -- nie polegamy na PATH ani na bieżącym katalogu roboczym
+  ## (ten drugi zależy od tego, skąd użytkownik odpalił `zde-comp`, co
+  ## jest niezawodne tylko przy pracy z `dist/` jako CWD, tak jak opisuje
+  ## "Wariant A" w README, ale niekoniecznie ogólnie).
+  let override = getEnv("ZDE_SHELL_PATH", "")
+  if override.len > 0: return override
+  let candidate = getAppDir() / "zde-shell"
+  if fileExists(candidate): return candidate
+  ""
+
+proc spawnShell(socketName: string) =
+  ## Wołane PO ustawieniu WAYLAND_DISPLAY (i DISPLAY, jeśli XWayland
+  ## wystartowało) w środowisku BIEŻĄCEGO procesu (`putEnv` w `main()`
+  ## niżej) -- `startProcess` domyślnie DZIEDZICZY środowisko procesu
+  ## wołającego (Nim nie czyści go, chyba że jawnie poda się `env=`), więc
+  ## `zde-shell` (i jego własne dzieci, np. aplikacje z launchera)
+  ## dostają oba automatycznie, bez przepychania ich osobno.
+  ##
+  ## Świadomie "best effort", tak jak reszta integracji zewnętrznych
+  ## narzędzi w ZDE (patrz np. `shell/sound.nim`, `shell/quicksettings.nim`):
+  ## brak `zde-shell` obok `zde-comp` albo błąd `startProcess` NIE
+  ## zatrzymuje kompozytora -- logujemy na stderr i użytkownik może
+  ## zawsze odpalić powłokę ręcznie (dokładnie jak w "Wariant A" dziś),
+  ## kompozytor sam w sobie jest w pełni użyteczny bez niej (można np.
+  ## zamiast tego odpalić inny klient Wayland).
+  if getEnv("ZDE_NO_AUTOSTART", "").len > 0:
+    stderr.writeLine("zde-comp: ZDE_NO_AUTOSTART ustawione -- pomijam autostart zde-shell")
+    return
+  let path = findShellBinary()
+  if path.len == 0:
+    stderr.writeLine("zde-comp: nie znaleziono zde-shell obok zde-comp (ani ZDE_SHELL_PATH nie " &
+      "ustawione) -- pomijam autostart; uruchom ręcznie: WAYLAND_DISPLAY=" & socketName & " zde-shell")
+    return
+  try:
+    discard startProcess(path, options = {poStdErrToStdOut, poUsePath, poDaemon})
+    stderr.writeLine("zde-comp: uruchomiono " & path & " (WAYLAND_DISPLAY=" & socketName & ")")
+  except OSError as e:
+    stderr.writeLine("zde-comp: nie udało się uruchomić " & path & ": " & e.msg &
+      " -- uruchom ręcznie: WAYLAND_DISPLAY=" & socketName & " zde-shell")
 
 var gServer: Server  ## potrzebny w handlerze sygnału -- wl_event_loop_add_signal
                       ## i tak przekazuje `data`, ale trzymanie w globalnej
@@ -71,6 +126,13 @@ proc main() =
   server.compositor = wlrCompositorCreate(server.display, 5, server.renderer)
   discard wlrSubcompositorCreate(server.display)
   server.dataDeviceMgr = wlrDataDeviceManagerCreate(server.display)
+  ## Rozbudowa v0.2 ("primary selection", patrz `wlcomp/seatext.nim`) --
+  ## sam `_create()` wystawia protokół `zwp_primary_selection_v1` w
+  ## rejestrze Waylanda (jak `wlrDataDeviceManagerCreate` wyżej dla
+  ## zwykłego schowka); nasłuch na `request_set_primary_selection` jest
+  ## podpięty niżej, razem z resztą zdarzeń `seat`u (bo wymaga
+  ## `server.seat`, który powstaje kawałek dalej).
+  server.primarySelectionMgr = wlrPrimarySelectionV1DeviceManagerCreate(server.display)
 
   server.outputLayout = wlrOutputLayoutCreate(server.display)
   server.scene = wlrSceneCreate()
@@ -106,6 +168,10 @@ proc main() =
 
   server.seat = wlrSeatCreate(server.display, SeatName)
   zdeSignalAdd(addr seatEvents(server.seat).requestSetSelection, addr server.requestSetSelectionL, onRequestSetSelection)
+  ## Rozbudowa v0.2 ("primary selection") -- patrz komentarze przy
+  ## `server.primarySelectionMgr` wyżej i `onRequestSetPrimarySelection`
+  ## w `wlcomp/seatext.nim`.
+  zdeSignalAdd(addr seatEvents(server.seat).requestSetPrimarySelection, addr server.requestSetPrimarySelectionL, onRequestSetPrimarySelection)
   zdeSignalAdd(addr seatEvents(server.seat).requestStartDrag, addr server.requestStartDragL, onRequestStartDrag)
   zdeSignalAdd(addr seatEvents(server.seat).startDrag, addr server.startDragL, onStartDrag)
 
@@ -146,8 +212,18 @@ proc main() =
     ## placeholder -- patrz `WlrXwayland` w `wlroots.nim`.
     let dn = if server.xwayland.displayName != nil: $server.xwayland.displayName else: "?"
     stderr.writeLine("zde-comp: XWayland gotowy na DISPLAY=" & dn)
+    ## Rozbudowa v0.2 (autostart zde-shell, patrz komentarz nad
+    ## `spawnShell` wyżej): DISPLAY też trzeba wystawić w środowisku
+    ## BIEŻĄCEGO procesu (`putEnv`), nie tylko zalogować -- wcześniej nie
+    ## było to nigdzie robione (patrz `grep putEnv` sprzed tej rundy: tylko
+    ## WAYLAND_DISPLAY). Bez tego dzieci `zde-shell` odpalane przez
+    ## launcher (np. terminal) NIE dostawałyby DISPLAY automatycznie, gdyby
+    ## kiedyś chciały odpalić starą aplikację X11 przez XWayland.
+    if dn != "?":
+      putEnv("DISPLAY", dn)
 
   stderr.writeLine("zde-comp: uruchomiony na WAYLAND_DISPLAY=" & $socket)
+  spawnShell($socket)
 
   try:
     writeFile(pidFilePath(), $getCurrentProcessId())
